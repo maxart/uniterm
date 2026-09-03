@@ -1,0 +1,34 @@
+[package]
+name = "uniterm-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# The `uniterm` binary front door (alias `ut` installed alongside). Phase 0 is a
+# stub that reports build info; Phase 1 wires attach/new-session/ls, and agents'
+# `uniterm workflow submit` / `uniterm relay submit` calls (docs/10).
+[lib]
+name = "uniterm_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "uniterm"
+path = "src/main.rs"
+
+# The short alias documented in docs/10. Shipping it as a real binary means it
+# is always available even when another `uniterm` is ahead on PATH (e.g. the old
+# Tauri app's AppImage bin dirs). Both binaries are thin wrappers over the lib.
+[[bin]]
+name = "ut"
+path = "src/bin/ut.rs"
+
+[dependencies]
+uniterm-client.workspace = true
+uniterm-server.workspace = true
+uniterm-core.workspace = true
+uniterm-proto.workspace = true
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# clap = { version = "4", features = ["derive"] }  # richer parsing lands in Phase 3

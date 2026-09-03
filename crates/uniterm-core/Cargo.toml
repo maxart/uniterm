@@ -1,0 +1,20 @@
+[package]
+name = "uniterm-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# INVARIANT: uniterm-core has NO dependency on any UI, async runtime, or I/O crate.
+# It is the pure model + pure decision logic. If you are about to add mio, tokio,
+# crossterm, ratatui, or reqwest here, stop - it belongs in uniterm-server instead.
+# This is enforced by the `no_forbidden_deps` test below and documented in AGENTS.md.
+[dependencies]
+# serde derive on the pure model types (grid/layout/ids) so they can be
+# snapshotted for persistence. Not a UI/async/IO crate, so it does not violate
+# the no-UI-in-core boundary (see the no_forbidden_deps test).
+serde = { workspace = true }
+unicode-segmentation.workspace = true
+unicode-width.workspace = true
+
+[dev-dependencies]
