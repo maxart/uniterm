@@ -1,0 +1,45 @@
+# Uniterm - a terminal multiplexer built for agentic engineering.
+# See docs/ for the full design. This workspace is the Phase 0 scaffold.
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "1.0.1"
+edition = "2021"
+rust-version = "1.96"
+license = "MIT"
+repository = "https://github.com/maxart/uniterm"
+homepage = "https://github.com/maxart/uniterm"
+
+# Shared dependency versions. Individual crates opt in via `dep.workspace = true`.
+# Note the deliberate split: mio for the hot path, tokio only for the agentic half.
+[workspace.dependencies]
+uniterm-core = { path = "crates/uniterm-core" }
+uniterm-proto = { path = "crates/uniterm-proto" }
+uniterm-server = { path = "crates/uniterm-server" }
+uniterm-client = { path = "crates/uniterm-client" }
+
+mio = { version = "1", features = ["os-poll", "net", "os-ext"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "time"] }
+crossbeam-channel = "0.5"
+# Systems half. portable-pty (WezTerm) for PTYs; vte (Alacritty) as the escape
+# parser state machine - our own emulator lays the cell model on top (docs/04).
+portable-pty = "0.9"
+vte = "0.13"
+libc = "0.2"
+# Wire protocol framing between client and server (docs/04 control protocol).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bincode = "1.3"
+unicode-segmentation = "1.13"
+unicode-width = "0.2"
+notify = { version = "8.2", default-features = false, features = ["macos_kqueue"] }
+shell-words = "1.1"
+sha2 = "0.10"
+
+[profile.release]
+# The product is measured on latency and footprint; optimize for it.
+lto = "thin"
+codegen-units = 1
+panic = "abort"

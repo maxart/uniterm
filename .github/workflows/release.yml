@@ -1,0 +1,78 @@
+name: Release
+
+# Pushing a version tag builds the four public asset pairs with the same
+# scripts a maintainer runs locally, verifies them with the same checks, and
+# publishes the GitHub release the installer downloads from. The release
+# notes are the annotated tag's message.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Build, verify, and publish ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain and the release targets
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.96.0
+          components: rustfmt, clippy
+          targets: aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, aarch64-linux-android
+      - name: Install zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Install cargo-zigbuild
+        run: pip install cargo-zigbuild==0.23.4
+      - name: Install the inspection tools the verifier uses
+        run: sudo apt-get update -q && sudo apt-get install -y -q llvm file binutils
+      - name: The tag must match the Cargo version
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "uniterm-cli") | .version')
+          test -n "$version" || { echo "could not read the Cargo version" >&2; exit 1; }
+          test "v$version" = "${GITHUB_REF_NAME}" || { echo "tag ${GITHUB_REF_NAME} does not match Cargo version $version" >&2; exit 1; }
+      - name: Gates
+        run: |
+          cargo fmt --all --check
+          cargo clippy --workspace --all-targets --locked
+          mkdir -p /tmp/ut /tmp/ut-rt && chmod 700 /tmp/ut /tmp/ut-rt
+          cargo test --workspace --locked --no-fail-fast
+        env:
+          RUSTFLAGS: -D warnings
+          TMPDIR: /tmp/ut
+          XDG_RUNTIME_DIR: /tmp/ut-rt
+      - name: Build the four public platforms
+        # The runner image exports ANDROID_NDK_LATEST_HOME; the dist script
+        # reads ANDROID_NDK_HOME.
+        run: |
+          export ANDROID_NDK_HOME="${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_HOME:?no Android NDK on this runner}}"
+          scripts/build-dist.sh ubuntu-x86_64
+          scripts/build-dist.sh ubuntu-aarch64
+          scripts/build-dist.sh macos-arm64
+          scripts/build-dist.sh android-aarch64
+      - name: Prepare and verify the release assets
+        run: |
+          release_dir=$(mktemp -d /tmp/uniterm-release.XXXXXX)
+          scripts/prepare-release-assets.sh "$release_dir"
+          scripts/verify-release-assets.sh "$release_dir"
+          echo "release_dir=$release_dir" >> "$GITHUB_ENV"
+      - name: Publish the release
+        run: |
+          git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+          git tag -l --format='%(contents)' "${GITHUB_REF_NAME}" > /tmp/notes.md
+          test -s /tmp/notes.md || echo "Uniterm ${GITHUB_REF_NAME}" > /tmp/notes.md
+          gh release create "${GITHUB_REF_NAME}" "$release_dir"/* \
+            --title "Uniterm ${GITHUB_REF_NAME}" \
+            --notes-file /tmp/notes.md \
+            --verify-tag
+        env:
+          GH_TOKEN: ${{ github.token }}
