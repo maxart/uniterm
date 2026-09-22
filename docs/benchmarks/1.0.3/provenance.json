@@ -1,0 +1,58 @@
+{
+  "tool_commit": "001372d6513d9b26b63e145dae84bd42477e540e",
+  "tool_sha256": "51eb7fed54fac33f434689ab0ea40732a503293639d7d3c7e9bd2576611335d0",
+  "configuration_sha256": "1b71821cffcdf47b890b90e9324fc47cb27b4bf1a86797e6a0a0b7c27bcaf49d",
+  "build_commands": [
+    {
+      "cwd": "/path/to/uniterm-benchmark/.artifacts/uniterm-v1.0.3-src",
+      "environment": {
+        "CARGO_TARGET_DIR": "/path/to/uniterm-benchmark/.artifacts/uniterm-v1.0.3-target"
+      },
+      "argv": [
+        "cargo",
+        "build",
+        "--release",
+        "--locked",
+        "-p",
+        "uniterm-cli",
+        "--bin",
+        "ut"
+      ],
+      "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+      "cargo": "cargo 1.96.0 (30a34c682 2026-05-25)",
+      "rust_toolchain_file": "[toolchain]\nchannel = \"1.96.0\"\ncomponents = [\"rustfmt\", \"clippy\"]\n"
+    },
+    {
+      "cwd": "/path/to/uniterm-benchmark/.artifacts/herdr-v0.8.2-src",
+      "environment": {
+        "CARGO_TARGET_DIR": "/path/to/uniterm-benchmark/.artifacts/herdr-v0.8.2-target",
+        "ZIG": "/path/to/uniterm-benchmark/.artifacts/zig-x86_64-linux-0.15.2/zig",
+        "ZIG_GLOBAL_CACHE_DIR": "/path/to/uniterm-benchmark/.artifacts/zig-global-cache",
+        "ZIG_LOCAL_CACHE_DIR": "/path/to/uniterm-benchmark/.artifacts/zig-local-cache"
+      },
+      "argv": [
+        "cargo",
+        "build",
+        "--release",
+        "--locked",
+        "--bin",
+        "herdr"
+      ],
+      "rustc": "rustc 1.96.1 (31fca3adb 2026-06-26)",
+      "cargo": "cargo 1.96.1 (356927216 2026-06-26)",
+      "rust_toolchain_file": "[toolchain]\nchannel = \"1.96.1\"\ncomponents = [\"clippy\", \"rustfmt\"]\n"
+    }
+  ],
+  "platform": "Linux xps 7.1.9-arch1-2 #1 SMP PREEMPT_DYNAMIC Fri, 21 Aug 2026 22:18:59 +0000 x86_64 GNU/Linux",
+  "cpu": "Architecture:                            x86_64\nCPU op-mode(s):                          32-bit, 64-bit\nAddress sizes:                           46 bits physical, 48 bits virtual\nByte Order:                              Little Endian\nCPU(s):                                  6\nOn-line CPU(s) list:                     0-5\nVendor ID:                               GenuineIntel\nModel name:                              Intel(R) Core(TM) 5 320\nCPU family:                              6\nModel:                                   213\nThread(s) per core:                      1\nCore(s) per socket:                      6\nSocket(s):                               1\nStepping:                                1\nMicrocode version:                       0xc\nCPU(s) scaling MHz:                      29%\nCPU max MHz:                             4800.0000\nCPU min MHz:                             400.0000\nBogoMIPS:                                4992.00\nFlags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc art arch_perfmon bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf tsc_known_freq pni pclmulqdq dtes64 monitor ds_cpl vmx smx est tm2 ssse3 sdbg fma cx16 xtpr pdcm pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm abm 3dnowprefetch cpuid_fault epb ssbd ibrs ibpb stibp ibrs_enhanced tpr_shadow flexpriority ept vpid ept_ad fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rdt_a rdseed adx smap clflushopt clwb intel_pt sha_ni xsaveopt xsavec xgetbv1 xsaves split_lock_detect user_shstk avx_vnni lass fred lam wbnoinvd dtherm ida arat pln pts hwp hwp_notify hwp_act_window hwp_epp hwp_pkg_req hfi vnmi umip pku ospke waitpkg gfni vaes vpclmulqdq rdpid bus_lock_detect movdiri movdir64b fsrm md_clear serialize arch_lbr ibt flush_l1d arch_capabilities\nVirtualization:                          VT-x\nL1d cache:                               224 KiB (6 instances)\nL1i cache:                               384 KiB (6 instances)\nL2 cache:                                10 MiB (3 instances)\nL3 cache:                                6 MiB (1 instance)\nNUMA node(s):                            1\nNUMA node0 CPU(s):                       0-5\nVulnerability Gather data sampling:      Not affected\nVulnerability Ghostwrite:                Not affected\nVulnerability Indirect target selection: Not affected\nVulnerability Itlb multihit:             Not affected\nVulnerability L1tf:                      Not affected\nVulnerability Mds:                       Not affected\nVulnerability Meltdown:                  Not affected\nVulnerability Mmio stale data:           Not affected\nVulnerability Old microcode:             Not affected\nVulnerability Reg file data sampling:    Not affected\nVulnerability Retbleed:                  Not affected\nVulnerability Spec rstack overflow:      Not affected\nVulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl\nVulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization\nVulnerability Spectre v2:                Mitigation; Enhanced / Automatic IBRS; IBPB conditional; PBRSB-eIBRS Not affected; BHI BHI_DIS_S\nVulnerability Srbds:                     Not affected\nVulnerability Tsa:                       Not affected\nVulnerability Tsx async abort:           Not affected\nVulnerability Vmscape:                   Not affected\n",
+  "terminal": "Harness-owned Unix PTY, TERM=xterm-256color; no graphical emulator in measured path",
+  "notes": "Native host execution outside sandbox PID namespace. Desktop and existing user applications remain running. No builds concurrent with measurements. Power and temperature observations logged; settings not changed. Builds honor repository-pinned toolchains: Uniterm Rust 1.96.0 and Herdr Rust 1.96.1. The harness host.rustc field is the comparator toolchain (1.97.1), not the product compilers.",
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+  "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
+  "official_tag_verification": {
+    "uniterm_v1.0.3_tag_object": "f30c956b9eda103381ded39a4c26150ca553dc1d",
+    "uniterm_v1.0.3_commit": "2a6da6bf370d7ab33f164460817b46086ba96314",
+    "herdr_v0.8.2_tag_object": "34ba52cc6ff3b723e6fc0130485ec24582dbe205",
+    "herdr_v0.8.2_commit": "9eb521456ac0d19d3ab3d9d7cea3cca10baa8a4c"
+  }
+}
