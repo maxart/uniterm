@@ -1,0 +1,27 @@
+2026-09-05T09:21:38-07:00 benchmark product PIDs remaining: []
+2026-09-05T09:21:38-07:00 starting standard
+running standard profile for 2 contender(s)
+wrote /path/to/uniterm-benchmark/reports/2026-09-05-v1.0.3/standard.json
+wrote /path/to/uniterm-benchmark/reports/2026-09-05-v1.0.3/standard.md
+2026-09-05T09:27:14-07:00 benchmark product PIDs remaining: []
+2026-09-05T09:27:14-07:00 standard.json: all metrics measured; no contender errors
+2026-09-05T09:27:14-07:00 starting marketing-1
+running marketing profile for 2 contender(s)
+wrote /path/to/uniterm-benchmark/reports/2026-09-05-v1.0.3/marketing-1.json
+wrote /path/to/uniterm-benchmark/reports/2026-09-05-v1.0.3/marketing-1.md
+2026-09-05T10:10:42-07:00 benchmark product PIDs remaining: []
+2026-09-05T10:10:42-07:00 marketing-1.json: all metrics measured; no contender errors
+2026-09-05T10:10:42-07:00 starting marketing-2
+running marketing profile for 2 contender(s)
+wrote /path/to/uniterm-benchmark/reports/2026-09-05-v1.0.3/marketing-2.json
+wrote /path/to/uniterm-benchmark/reports/2026-09-05-v1.0.3/marketing-2.md
+2026-09-05T10:54:11-07:00 benchmark product PIDs remaining: []
+2026-09-05T10:54:11-07:00 marketing-2.json: all metrics measured; no contender errors
+2026-09-05T10:54:11-07:00 starting marketing-3
+running marketing profile for 2 contender(s)
+wrote /path/to/uniterm-benchmark/reports/2026-09-05-v1.0.3/marketing-3.json
+wrote /path/to/uniterm-benchmark/reports/2026-09-05-v1.0.3/marketing-3.md
+2026-09-05T11:37:39-07:00 benchmark product PIDs remaining: []
+2026-09-05T11:37:39-07:00 marketing-3.json: all metrics measured; no contender errors
+wrote /path/to/uniterm-benchmark/reports/2026-09-05-v1.0.3/report.md
+2026-09-05T11:37:39-07:00 ALL RUNS COMPLETE
