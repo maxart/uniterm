@@ -1,0 +1,10 @@
+/target
+/dist/
+**/*.rs.bk
+*.pdb
+# Per-project agentic state (created at runtime, never committed)
+.uniterm/
+# Editor/OS noise
+.DS_Store
+# Local agent/session runtime state
+.claude/
