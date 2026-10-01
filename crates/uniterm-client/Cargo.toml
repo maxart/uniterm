@@ -1,0 +1,18 @@
+[package]
+name = "uniterm-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# The thin attach client + the Observatory/dialog surfaces. This is the ONLY
+# crate allowed to depend on a TUI toolkit (ratatui), and only for the dashboard
+# and dialog surfaces - never the pane render path (that lives in the server's
+# damage-tracked renderer). See AGENTS.md and docs/01-language-decision.md R2/R3.
+[dependencies]
+uniterm-core.workspace = true
+uniterm-proto.workspace = true
+mio.workspace = true
+libc.workspace = true
+serde_json.workspace = true
+# ratatui = "0.30"   # reserved for low-frequency client dialogs; not needed yet.

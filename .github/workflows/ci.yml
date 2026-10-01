@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  gates:
+    name: Gates (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain
+        # Pinned to a commit (master as of 2026-09-03) so a compromised tag cannot change the toolchain we build releases with.
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: 1.96.0
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Build
+        run: cargo build --workspace --locked
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked
+      - name: Prepare short runtime paths
+        # Unix socket paths are limited to about 104 bytes. The macOS runner's
+        # default temp directory alone is 49, so tests get a short TMPDIR.
+        run: mkdir -p /tmp/ut /tmp/ut-rt && chmod 700 /tmp/ut /tmp/ut-rt
+      - name: Test
+        run: cargo test --workspace --locked --no-fail-fast
+        env:
+          TMPDIR: /tmp/ut
+          XDG_RUNTIME_DIR: /tmp/ut-rt
+      - name: Install terminal oracle
+        run: |
+          if ! command -v tmux; then
+            if [ "${{ runner.os }}" = Linux ]; then
+              sudo apt-get update
+              sudo apt-get install -y tmux
+            else
+              brew install tmux
+            fi
+          fi
+      - name: Required terminal differential corpus
+        run: cargo test --locked -p uniterm-server --test vt_differential -- --ignored
+        env:
+          TMPDIR: /tmp/ut
+          XDG_RUNTIME_DIR: /tmp/ut-rt
+
+  release-profile:
+    name: Release-profile tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - # Pinned to a commit (master as of 2026-09-03) so a compromised tag cannot change the toolchain we build releases with.
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: 1.96.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Prepare short runtime paths
+        run: mkdir -p /tmp/ut /tmp/ut-rt && chmod 700 /tmp/ut /tmp/ut-rt
+      - name: Test in release
+        # debug_assert! bodies and overflow checks are compiled out here, so
+        # this run catches what the debug run cannot.
+        run: cargo test --workspace --release --locked --no-fail-fast
+        env:
+          TMPDIR: /tmp/ut
+          XDG_RUNTIME_DIR: /tmp/ut-rt
+      - name: Renderer and checkpoint budgets
+        run: |
+          cargo run --release --locked -p uniterm-server --example render_spike
+          cargo run --release --locked -p uniterm-server --example checkpoint_spike
+
+  installer:
+    name: Installer
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint shell scripts
+        run: shellcheck install.sh scripts/build-dist.sh scripts/prepare-release-assets.sh scripts/verify-release-assets.sh scripts/test-installer.sh
+      - # Pinned to a commit (master as of 2026-09-03) so a compromised tag cannot change the toolchain we build releases with.
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: 1.96.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Installer integration test
+        run: sh scripts/test-installer.sh
