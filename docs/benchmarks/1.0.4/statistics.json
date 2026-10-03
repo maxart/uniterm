@@ -1,0 +1,2501 @@
+{
+  "summary_schema": 1,
+  "source_report_schema": 7,
+  "trial_count": 3,
+  "aggregation": "Median of three run medians; range is min/max of run medians. No pooled or invented RunReport.",
+  "profile": {
+    "name": "marketing",
+    "startup_iterations": 20,
+    "command_iterations": 50,
+    "latency_iterations": 100,
+    "output_iterations": 10,
+    "idle_seconds": 300.0,
+    "settle_seconds": 10.0,
+    "sample_interval_ms": 500,
+    "terminal_cols": 160,
+    "terminal_rows": 50,
+    "output_lines": 50000,
+    "pane_count": 16,
+    "resize_iterations": 40,
+    "extra_clients": 2
+  },
+  "host": {
+    "os": "linux",
+    "architecture": "x86_64",
+    "kernel": "Linux 7.1.9-redacted",
+    "hostname": "host",
+    "logical_cpus": 6,
+    "rustc": "rustc 1.97.1",
+    "wsl": false,
+    "git_dirty_policy": "Source dirtiness is recorded; local paths are omitted.",
+    "cpu_time_source": "/proc/<pid>/stat (10 ms ticks); ps supplies RSS and process ancestry"
+  },
+  "tool_commit": "76026d6233515d1e568ba60f5837bbb529e626cb",
+  "tool_sha256": "84403f6d03d1cfb22d7523c2ca0a385659f887a64f01e06acd60b3d2c6061f7f",
+  "warning_counts": [
+    0,
+    0,
+    0
+  ],
+  "contenders": {
+    "uniterm": {
+      "version": "uniterm 1.0.4",
+      "source_commit": "a961519c5ed965c91a9f354554bfdcaba154810a",
+      "artifact_sha256": "c3c62e53cdd16be1f68dfff518cf4b33c2cf5bc6691ccd2b00344455aceb7b85",
+      "balanced_index": {
+        "median": 98.66872747172921,
+        "min": 98.60296166097717,
+        "max": 98.7543799062601,
+        "per_trial": [
+          98.66872747172921,
+          98.60296166097717,
+          98.7543799062601
+        ]
+      }
+    },
+    "herdr": {
+      "version": "herdr 0.8.2",
+      "source_commit": "9eb521456ac0d19d3ab3d9d7cea3cca10baa8a4c",
+      "artifact_sha256": "85122e080e0a9d40e8e618bad2b5b491f6b58f1be1dfbb66b2898b74bf2464f3",
+      "balanced_index": {
+        "median": 36.05893343630838,
+        "min": 35.65060056114487,
+        "max": 36.55668509235972,
+        "per_trial": [
+          36.55668509235972,
+          36.05893343630838,
+          35.65060056114487
+        ]
+      }
+    },
+    "tmux": {
+      "version": "tmux 3.7c",
+      "source_commit": "e476c1230b958df0cb12977517d24b3dc931375b",
+      "artifact_sha256": "365e1283883c342f6bbd3272d62a496f37fcc51680f0c845386873910152d517",
+      "balanced_index": {
+        "median": 85.83080610690443,
+        "min": 85.29184329097899,
+        "max": 86.61691304663994,
+        "per_trial": [
+          86.61691304663994,
+          85.83080610690443,
+          85.29184329097899
+        ]
+      }
+    }
+  },
+  "metrics": {
+    "server_startup_ready": {
+      "unit": "ms",
+      "direction": "lower",
+      "classification": "core",
+      "contenders": {
+        "uniterm": {
+          "median": 8.2336615,
+          "min": 8.0924735,
+          "max": 8.761942999999999,
+          "run_medians": [
+            8.761942999999999,
+            8.0924735,
+            8.2336615
+          ],
+          "run_p95": [
+            9.64713285,
+            8.7666781,
+            9.420052649999999
+          ],
+          "run_sample_counts": [
+            20,
+            20,
+            20
+          ]
+        },
+        "herdr": {
+          "median": 44.853382499999995,
+          "min": 44.429833,
+          "max": 47.8755635,
+          "run_medians": [
+            47.8755635,
+            44.429833,
+            44.853382499999995
+          ],
+          "run_p95": [
+            50.00698655,
+            50.69894995,
+            49.36216365
+          ],
+          "run_sample_counts": [
+            20,
+            20,
+            20
+          ]
+        },
+        "tmux": {
+          "median": 15.4864055,
+          "min": 14.8738535,
+          "max": 16.1115455,
+          "run_medians": [
+            16.1115455,
+            14.8738535,
+            15.4864055
+          ],
+          "run_p95": [
+            17.665660150000004,
+            15.6928304,
+            16.28995025
+          ],
+          "run_sample_counts": [
+            20,
+            20,
+            20
+          ]
+        }
+      }
+    },
+    "control_command_latency": {
+      "unit": "ms",
+      "direction": "lower",
+      "classification": "core",
+      "contenders": {
+        "uniterm": {
+          "median": 1.3475320000000002,
+          "min": 1.2649629999999998,
+          "max": 1.429746,
+          "run_medians": [
+            1.429746,
+            1.3475320000000002,
+            1.2649629999999998
+          ],
+          "run_p95": [
+            2.102167249999999,
+            1.7813881499999995,
+            1.6559297499999999
+          ],
+          "run_sample_counts": [
+            50,
+            50,
+            50
+          ]
+        },
+        "herdr": {
+          "median": 3.5256019999999997,
+          "min": 3.4145405,
+          "max": 3.537942,
+          "run_medians": [
+            3.537942,
+            3.4145405,
+            3.5256019999999997
+          ],
+          "run_p95": [
+            4.3089064,
+            3.9544669,
+            4.4493407000000005
+          ],
+          "run_sample_counts": [
+            50,
+            50,
+            50
+          ]
+        },
+        "tmux": {
+          "median": 2.1806324999999998,
+          "min": 2.0926299999999998,
+          "max": 2.2270085,
+          "run_medians": [
+            2.1806324999999998,
+            2.2270085,
+            2.0926299999999998
+          ],
+          "run_p95": [
+            2.6982830499999997,
+            3.0526894999999987,
+            2.4047793499999996
+          ],
+          "run_sample_counts": [
+            50,
+            50,
+            50
+          ]
+        }
+      }
+    },
+    "daemon_idle_cohort_cpu": {
+      "unit": "% core",
+      "direction": "lower",
+      "classification": "core",
+      "contenders": {
+        "uniterm": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "run_medians": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "run_p95": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "herdr": {
+          "median": 0.2566463718774482,
+          "min": 0.24998165956391843,
+          "max": 0.2633138622869756,
+          "run_medians": [
+            0.24998165956391843,
+            0.2633138622869756,
+            0.2566463718774482
+          ],
+          "run_p95": [
+            0.24998165956391843,
+            0.2633138622869756,
+            0.2566463718774482
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "tmux": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "run_medians": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "run_p95": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        }
+      }
+    },
+    "daemon_idle_cohort_rss": {
+      "unit": "KiB",
+      "direction": "lower",
+      "classification": "core",
+      "contenders": {
+        "uniterm": {
+          "median": 11460.0,
+          "min": 11304.0,
+          "max": 11532.0,
+          "run_medians": [
+            11532.0,
+            11304.0,
+            11460.0
+          ],
+          "run_p95": [
+            11532.0,
+            11304.0,
+            11460.0
+          ],
+          "run_sample_counts": [
+            569,
+            576,
+            576
+          ]
+        },
+        "herdr": {
+          "median": 24664.0,
+          "min": 24500.0,
+          "max": 24860.0,
+          "run_medians": [
+            24500.0,
+            24664.0,
+            24860.0
+          ],
+          "run_p95": [
+            24500.0,
+            24664.0,
+            24860.0
+          ],
+          "run_sample_counts": [
+            576,
+            575,
+            575
+          ]
+        },
+        "tmux": {
+          "median": 10832.0,
+          "min": 10828.0,
+          "max": 10912.0,
+          "run_medians": [
+            10912.0,
+            10828.0,
+            10832.0
+          ],
+          "run_p95": [
+            10912.0,
+            10828.0,
+            10832.0
+          ],
+          "run_sample_counts": [
+            575,
+            576,
+            576
+          ]
+        }
+      }
+    },
+    "foreground_idle_cohort_cpu": {
+      "unit": "% core",
+      "direction": "lower",
+      "classification": "core",
+      "contenders": {
+        "uniterm": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "run_medians": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "run_p95": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "herdr": {
+          "median": 0.4266353760321874,
+          "min": 0.4266351450446849,
+          "max": 0.4399674704404481,
+          "run_medians": [
+            0.4266353760321874,
+            0.4266351450446849,
+            0.4399674704404481
+          ],
+          "run_p95": [
+            0.4266353760321874,
+            0.4266351450446849,
+            0.4399674704404481
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "tmux": {
+          "median": 0.0033330972764291475,
+          "min": 0.003333092852939385,
+          "max": 0.006666193380269056,
+          "run_medians": [
+            0.0033330972764291475,
+            0.003333092852939385,
+            0.006666193380269056
+          ],
+          "run_p95": [
+            0.0033330972764291475,
+            0.003333092852939385,
+            0.006666193380269056
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        }
+      }
+    },
+    "foreground_idle_cohort_rss": {
+      "unit": "KiB",
+      "direction": "lower",
+      "classification": "core",
+      "contenders": {
+        "uniterm": {
+          "median": 16148.0,
+          "min": 16008.0,
+          "max": 16168.0,
+          "run_medians": [
+            16148.0,
+            16008.0,
+            16168.0
+          ],
+          "run_p95": [
+            16148.0,
+            16008.0,
+            16168.0
+          ],
+          "run_sample_counts": [
+            572,
+            575,
+            575
+          ]
+        },
+        "herdr": {
+          "median": 39372.0,
+          "min": 39256.0,
+          "max": 39408.0,
+          "run_medians": [
+            39256.0,
+            39372.0,
+            39408.0
+          ],
+          "run_p95": [
+            39256.0,
+            39372.0,
+            39408.0
+          ],
+          "run_sample_counts": [
+            575,
+            575,
+            575
+          ]
+        },
+        "tmux": {
+          "median": 17372.0,
+          "min": 17320.0,
+          "max": 17524.0,
+          "run_medians": [
+            17320.0,
+            17372.0,
+            17524.0
+          ],
+          "run_p95": [
+            17320.0,
+            17372.0,
+            17524.0
+          ],
+          "run_sample_counts": [
+            576,
+            576,
+            576
+          ]
+        }
+      }
+    },
+    "terminal_input_to_visible": {
+      "unit": "ms",
+      "direction": "lower",
+      "classification": "core",
+      "contenders": {
+        "uniterm": {
+          "median": 2.0809265,
+          "min": 2.0784905,
+          "max": 2.0931189999999997,
+          "run_medians": [
+            2.0931189999999997,
+            2.0809265,
+            2.0784905
+          ],
+          "run_p95": [
+            2.10869805,
+            2.0956083999999997,
+            2.1118002000000002
+          ],
+          "run_sample_counts": [
+            100,
+            100,
+            100
+          ]
+        },
+        "herdr": {
+          "median": 8.305759,
+          "min": 8.305705500000002,
+          "max": 8.31517,
+          "run_medians": [
+            8.305705500000002,
+            8.31517,
+            8.305759
+          ],
+          "run_p95": [
+            10.341887400000001,
+            10.3422672,
+            10.38864615
+          ],
+          "run_sample_counts": [
+            100,
+            100,
+            100
+          ]
+        },
+        "tmux": {
+          "median": 2.08866,
+          "min": 2.0851165000000003,
+          "max": 2.089024,
+          "run_medians": [
+            2.0851165000000003,
+            2.08866,
+            2.089024
+          ],
+          "run_p95": [
+            2.0898275,
+            2.09953465,
+            2.09950605
+          ],
+          "run_sample_counts": [
+            100,
+            100,
+            100
+          ]
+        }
+      }
+    },
+    "terminal_output_completion": {
+      "unit": "ms",
+      "direction": "lower",
+      "classification": "core",
+      "contenders": {
+        "uniterm": {
+          "median": 392.524308,
+          "min": 390.58281,
+          "max": 398.38608250000004,
+          "run_medians": [
+            392.524308,
+            398.38608250000004,
+            390.58281
+          ],
+          "run_p95": [
+            410.0394829,
+            413.57357715,
+            401.91166594999993
+          ],
+          "run_sample_counts": [
+            10,
+            10,
+            10
+          ]
+        },
+        "herdr": {
+          "median": 372.6516515,
+          "min": 371.627409,
+          "max": 373.80062449999997,
+          "run_medians": [
+            372.6516515,
+            371.627409,
+            373.80062449999997
+          ],
+          "run_p95": [
+            388.12307380000004,
+            397.55307304999997,
+            404.85637105
+          ],
+          "run_sample_counts": [
+            10,
+            10,
+            10
+          ]
+        },
+        "tmux": {
+          "median": 391.01365150000004,
+          "min": 382.75816199999997,
+          "max": 395.7590305,
+          "run_medians": [
+            391.01365150000004,
+            382.75816199999997,
+            395.7590305
+          ],
+          "run_p95": [
+            441.96756294999994,
+            437.4879248499999,
+            452.6210304499999
+          ],
+          "run_sample_counts": [
+            10,
+            10,
+            10
+          ]
+        }
+      }
+    },
+    "binary_size": {
+      "unit": "bytes",
+      "direction": "lower",
+      "classification": "context",
+      "contenders": {
+        "uniterm": {
+          "median": 5917032.0,
+          "min": 5917032.0,
+          "max": 5917032.0,
+          "run_medians": [
+            5917032.0,
+            5917032.0,
+            5917032.0
+          ],
+          "run_p95": [
+            5917032.0,
+            5917032.0,
+            5917032.0
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "herdr": {
+          "median": 24535224.0,
+          "min": 24535224.0,
+          "max": 24535224.0,
+          "run_medians": [
+            24535224.0,
+            24535224.0,
+            24535224.0
+          ],
+          "run_p95": [
+            24535224.0,
+            24535224.0,
+            24535224.0
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "tmux": {
+          "median": 1411088.0,
+          "min": 1411088.0,
+          "max": 1411088.0,
+          "run_medians": [
+            1411088.0,
+            1411088.0,
+            1411088.0
+          ],
+          "run_p95": [
+            1411088.0,
+            1411088.0,
+            1411088.0
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        }
+      }
+    },
+    "client_render_output": {
+      "unit": "bytes",
+      "direction": "lower",
+      "classification": "context",
+      "contenders": {
+        "uniterm": {
+          "median": 56818.0,
+          "min": 56788.0,
+          "max": 56837.5,
+          "run_medians": [
+            56788.0,
+            56837.5,
+            56818.0
+          ],
+          "run_p95": [
+            57067.2,
+            68011.79999999997,
+            63525.599999999984
+          ],
+          "run_sample_counts": [
+            10,
+            10,
+            10
+          ]
+        },
+        "herdr": {
+          "median": 19067.0,
+          "min": 18877.0,
+          "max": 19227.5,
+          "run_medians": [
+            19067.0,
+            19227.5,
+            18877.0
+          ],
+          "run_p95": [
+            20803.35,
+            21642.35,
+            21495.1
+          ],
+          "run_sample_counts": [
+            10,
+            10,
+            10
+          ]
+        },
+        "tmux": {
+          "median": 2350408.5,
+          "min": 2267529.5,
+          "max": 2381661.5,
+          "run_medians": [
+            2381661.5,
+            2267529.5,
+            2350408.5
+          ],
+          "run_p95": [
+            2783418.999999999,
+            2356842.5,
+            2485493.55
+          ],
+          "run_sample_counts": [
+            10,
+            10,
+            10
+          ]
+        }
+      }
+    },
+    "daemon_idle_root_cpu": {
+      "unit": "% core",
+      "direction": "lower",
+      "classification": "context",
+      "contenders": {
+        "uniterm": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "run_medians": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "run_p95": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "herdr": {
+          "median": 0.2566463718774482,
+          "min": 0.24998165956391843,
+          "max": 0.2633138622869756,
+          "run_medians": [
+            0.24998165956391843,
+            0.2633138622869756,
+            0.2566463718774482
+          ],
+          "run_p95": [
+            0.24998165956391843,
+            0.2633138622869756,
+            0.2566463718774482
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "tmux": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "run_medians": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "run_p95": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        }
+      }
+    },
+    "daemon_idle_root_rss": {
+      "unit": "KiB",
+      "direction": "lower",
+      "classification": "context",
+      "contenders": {
+        "uniterm": {
+          "median": 7108.0,
+          "min": 6908.0,
+          "max": 7132.0,
+          "run_medians": [
+            7132.0,
+            6908.0,
+            7108.0
+          ],
+          "run_p95": [
+            7132.0,
+            6908.0,
+            7108.0
+          ],
+          "run_sample_counts": [
+            569,
+            576,
+            576
+          ]
+        },
+        "herdr": {
+          "median": 20256.0,
+          "min": 20036.0,
+          "max": 20380.0,
+          "run_medians": [
+            20036.0,
+            20256.0,
+            20380.0
+          ],
+          "run_p95": [
+            20036.0,
+            20256.0,
+            20380.0
+          ],
+          "run_sample_counts": [
+            576,
+            575,
+            575
+          ]
+        },
+        "tmux": {
+          "median": 6428.0,
+          "min": 6424.0,
+          "max": 6452.0,
+          "run_medians": [
+            6428.0,
+            6424.0,
+            6452.0
+          ],
+          "run_p95": [
+            6428.0,
+            6424.0,
+            6452.0
+          ],
+          "run_sample_counts": [
+            575,
+            576,
+            576
+          ]
+        }
+      }
+    },
+    "foreground_idle_root_cpu": {
+      "unit": "% core",
+      "direction": "lower",
+      "classification": "context",
+      "contenders": {
+        "uniterm": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "run_medians": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "run_p95": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "herdr": {
+          "median": 0.4266353760321874,
+          "min": 0.42663514504468497,
+          "max": 0.4399674704404481,
+          "run_medians": [
+            0.4266353760321874,
+            0.42663514504468497,
+            0.4399674704404481
+          ],
+          "run_p95": [
+            0.4266353760321874,
+            0.42663514504468497,
+            0.4399674704404481
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "tmux": {
+          "median": 0.0033330972764291523,
+          "min": 0.003333092852939385,
+          "max": 0.006666193380269056,
+          "run_medians": [
+            0.0033330972764291523,
+            0.003333092852939385,
+            0.006666193380269056
+          ],
+          "run_p95": [
+            0.0033330972764291523,
+            0.003333092852939385,
+            0.006666193380269056
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        }
+      }
+    },
+    "foreground_idle_root_rss": {
+      "unit": "KiB",
+      "direction": "lower",
+      "classification": "context",
+      "contenders": {
+        "uniterm": {
+          "median": 11720.0,
+          "min": 11584.0,
+          "max": 11724.0,
+          "run_medians": [
+            11720.0,
+            11584.0,
+            11724.0
+          ],
+          "run_p95": [
+            11720.0,
+            11584.0,
+            11724.0
+          ],
+          "run_sample_counts": [
+            572,
+            575,
+            575
+          ]
+        },
+        "herdr": {
+          "median": 34872.0,
+          "min": 34764.0,
+          "max": 34900.0,
+          "run_medians": [
+            34764.0,
+            34872.0,
+            34900.0
+          ],
+          "run_p95": [
+            34764.0,
+            34872.0,
+            34900.0
+          ],
+          "run_sample_counts": [
+            575,
+            575,
+            575
+          ]
+        },
+        "tmux": {
+          "median": 12944.0,
+          "min": 12812.0,
+          "max": 13056.0,
+          "run_medians": [
+            12812.0,
+            12944.0,
+            13056.0
+          ],
+          "run_p95": [
+            12812.0,
+            12944.0,
+            13056.0
+          ],
+          "run_sample_counts": [
+            576,
+            576,
+            576
+          ]
+        }
+      }
+    },
+    "isolated_state_size": {
+      "unit": "bytes",
+      "direction": "neutral",
+      "classification": "context",
+      "contenders": {
+        "uniterm": {
+          "median": 1783436.0,
+          "min": 1783436.0,
+          "max": 1783961.0,
+          "run_medians": [
+            1783436.0,
+            1783436.0,
+            1783961.0
+          ],
+          "run_p95": [
+            1783436.0,
+            1783436.0,
+            1783961.0
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "herdr": {
+          "median": 4810.0,
+          "min": 4810.0,
+          "max": 4945.0,
+          "run_medians": [
+            4945.0,
+            4810.0,
+            4810.0
+          ],
+          "run_p95": [
+            4945.0,
+            4810.0,
+            4810.0
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "tmux": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "run_medians": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "run_p95": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        }
+      }
+    },
+    "live_suite_shutdown": {
+      "unit": "ms",
+      "direction": "lower",
+      "classification": "context",
+      "contenders": {
+        "uniterm": {
+          "median": 45.177158,
+          "min": 43.053415,
+          "max": 46.113815,
+          "run_medians": [
+            45.177158,
+            43.053415,
+            46.113815
+          ],
+          "run_p95": [
+            45.177158,
+            43.053415,
+            46.113815
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "herdr": {
+          "median": 79.142701,
+          "min": 79.100685,
+          "max": 79.21399799999999,
+          "run_medians": [
+            79.100685,
+            79.21399799999999,
+            79.142701
+          ],
+          "run_p95": [
+            79.100685,
+            79.21399799999999,
+            79.142701
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "tmux": {
+          "median": 27.085749999999997,
+          "min": 26.831431,
+          "max": 28.514484,
+          "run_medians": [
+            28.514484,
+            26.831431,
+            27.085749999999997
+          ],
+          "run_p95": [
+            28.514484,
+            26.831431,
+            27.085749999999997
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        }
+      }
+    },
+    "multiclient_3_idle_cohort_cpu": {
+      "unit": "% core",
+      "direction": "lower",
+      "classification": "context",
+      "contenders": {
+        "uniterm": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "run_medians": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "run_p95": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "herdr": {
+          "median": 0.7199429150999115,
+          "min": 0.716610360357218,
+          "max": 0.7299695516195583,
+          "run_medians": [
+            0.7199429150999115,
+            0.7299695516195583,
+            0.716610360357218
+          ],
+          "run_p95": [
+            0.7199429150999115,
+            0.7299695516195583,
+            0.716610360357218
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "tmux": {
+          "median": 0.003333104838552925,
+          "min": 0.003333083774785238,
+          "max": 0.0066666336130527725,
+          "run_medians": [
+            0.003333104838552925,
+            0.0066666336130527725,
+            0.003333083774785238
+          ],
+          "run_p95": [
+            0.003333104838552925,
+            0.0066666336130527725,
+            0.003333083774785238
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        }
+      }
+    },
+    "multiclient_3_idle_cohort_rss": {
+      "unit": "KiB",
+      "direction": "lower",
+      "classification": "context",
+      "contenders": {
+        "uniterm": {
+          "median": 25124.0,
+          "min": 24956.0,
+          "max": 25152.0,
+          "run_medians": [
+            24956.0,
+            25152.0,
+            25124.0
+          ],
+          "run_p95": [
+            24956.0,
+            25152.0,
+            25124.0
+          ],
+          "run_sample_counts": [
+            576,
+            575,
+            575
+          ]
+        },
+        "herdr": {
+          "median": 67076.0,
+          "min": 66808.0,
+          "max": 67172.0,
+          "run_medians": [
+            66808.0,
+            67076.0,
+            67172.0
+          ],
+          "run_p95": [
+            66808.0,
+            67076.0,
+            67172.0
+          ],
+          "run_sample_counts": [
+            574,
+            574,
+            574
+          ]
+        },
+        "tmux": {
+          "median": 30328.0,
+          "min": 30288.0,
+          "max": 30392.0,
+          "run_medians": [
+            30288.0,
+            30328.0,
+            30392.0
+          ],
+          "run_p95": [
+            30288.0,
+            30328.0,
+            30392.0
+          ],
+          "run_sample_counts": [
+            576,
+            575,
+            575
+          ]
+        }
+      }
+    },
+    "multiclient_3_idle_root_cpu": {
+      "unit": "% core",
+      "direction": "lower",
+      "classification": "context",
+      "contenders": {
+        "uniterm": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "run_medians": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "run_p95": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "herdr": {
+          "median": 0.7199429150999113,
+          "min": 0.7166103603572178,
+          "max": 0.7299695516195581,
+          "run_medians": [
+            0.7199429150999113,
+            0.7299695516195581,
+            0.7166103603572178
+          ],
+          "run_p95": [
+            0.7199429150999113,
+            0.7299695516195581,
+            0.7166103603572178
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "tmux": {
+          "median": 0.003333104838552925,
+          "min": 0.003333083774785238,
+          "max": 0.0066666336130527725,
+          "run_medians": [
+            0.003333104838552925,
+            0.0066666336130527725,
+            0.003333083774785238
+          ],
+          "run_p95": [
+            0.003333104838552925,
+            0.0066666336130527725,
+            0.003333083774785238
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        }
+      }
+    },
+    "multiclient_3_idle_root_rss": {
+      "unit": "KiB",
+      "direction": "lower",
+      "classification": "context",
+      "contenders": {
+        "uniterm": {
+          "median": 20680.0,
+          "min": 20512.0,
+          "max": 20704.0,
+          "run_medians": [
+            20512.0,
+            20704.0,
+            20680.0
+          ],
+          "run_p95": [
+            20512.0,
+            20704.0,
+            20680.0
+          ],
+          "run_sample_counts": [
+            576,
+            575,
+            575
+          ]
+        },
+        "herdr": {
+          "median": 62664.0,
+          "min": 62384.0,
+          "max": 62724.0,
+          "run_medians": [
+            62384.0,
+            62664.0,
+            62724.0
+          ],
+          "run_p95": [
+            62384.0,
+            62664.0,
+            62724.0
+          ],
+          "run_sample_counts": [
+            574,
+            574,
+            574
+          ]
+        },
+        "tmux": {
+          "median": 25896.0,
+          "min": 25868.0,
+          "max": 25916.0,
+          "run_medians": [
+            25868.0,
+            25916.0,
+            25896.0
+          ],
+          "run_p95": [
+            25868.0,
+            25916.0,
+            25896.0
+          ],
+          "run_sample_counts": [
+            576,
+            575,
+            575
+          ]
+        }
+      }
+    },
+    "multiclient_3_input_to_visible": {
+      "unit": "ms",
+      "direction": "lower",
+      "classification": "context",
+      "contenders": {
+        "uniterm": {
+          "median": 2.082182,
+          "min": 2.0811155,
+          "max": 2.0862945,
+          "run_medians": [
+            2.0811155,
+            2.0862945,
+            2.082182
+          ],
+          "run_p95": [
+            4.145174450000001,
+            2.1285749,
+            2.09311425
+          ],
+          "run_sample_counts": [
+            100,
+            100,
+            100
+          ]
+        },
+        "herdr": {
+          "median": 12.544652,
+          "min": 12.433694,
+          "max": 14.4599405,
+          "run_medians": [
+            12.544652,
+            14.4599405,
+            12.433694
+          ],
+          "run_p95": [
+            14.910296749999995,
+            14.623442349999994,
+            14.812854549999994
+          ],
+          "run_sample_counts": [
+            100,
+            100,
+            100
+          ]
+        },
+        "tmux": {
+          "median": 2.0945245,
+          "min": 2.087901,
+          "max": 2.1905015,
+          "run_medians": [
+            2.1905015,
+            2.087901,
+            2.0945245
+          ],
+          "run_p95": [
+            2.33056465,
+            2.1248020999999997,
+            2.3239066999999998
+          ],
+          "run_sample_counts": [
+            100,
+            100,
+            100
+          ]
+        }
+      }
+    },
+    "multipane_16_idle_cohort_cpu": {
+      "unit": "% core",
+      "direction": "lower",
+      "classification": "context",
+      "contenders": {
+        "uniterm": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "run_medians": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "run_p95": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "herdr": {
+          "median": 0.9932522555091607,
+          "min": 0.9799228605769403,
+          "max": 1.0032562114866859,
+          "run_medians": [
+            0.9799228605769403,
+            0.9932522555091607,
+            1.0032562114866859
+          ],
+          "run_p95": [
+            0.9799228605769403,
+            0.9932522555091607,
+            1.0032562114866859
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "tmux": {
+          "median": 0.003333083097453479,
+          "min": 0.003333080787579704,
+          "max": 0.006666187595628834,
+          "run_medians": [
+            0.006666187595628834,
+            0.003333080787579704,
+            0.003333083097453479
+          ],
+          "run_p95": [
+            0.006666187595628834,
+            0.003333080787579704,
+            0.003333083097453479
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        }
+      }
+    },
+    "multipane_16_idle_cohort_rss": {
+      "unit": "KiB",
+      "direction": "lower",
+      "classification": "context",
+      "contenders": {
+        "uniterm": {
+          "median": 84440.0,
+          "min": 84192.0,
+          "max": 84680.0,
+          "run_medians": [
+            84680.0,
+            84192.0,
+            84440.0
+          ],
+          "run_p95": [
+            84680.0,
+            84192.0,
+            84440.0
+          ],
+          "run_sample_counts": [
+            574,
+            574,
+            575
+          ]
+        },
+        "herdr": {
+          "median": 110904.0,
+          "min": 110724.0,
+          "max": 111140.0,
+          "run_medians": [
+            110904.0,
+            111140.0,
+            110724.0
+          ],
+          "run_p95": [
+            110908.0,
+            111140.0,
+            110728.0
+          ],
+          "run_sample_counts": [
+            574,
+            574,
+            574
+          ]
+        },
+        "tmux": {
+          "median": 83444.0,
+          "min": 83284.0,
+          "max": 83488.0,
+          "run_medians": [
+            83444.0,
+            83284.0,
+            83488.0
+          ],
+          "run_p95": [
+            83444.0,
+            83284.0,
+            83488.0
+          ],
+          "run_sample_counts": [
+            575,
+            575,
+            575
+          ]
+        }
+      }
+    },
+    "multipane_16_idle_root_cpu": {
+      "unit": "% core",
+      "direction": "lower",
+      "classification": "context",
+      "contenders": {
+        "uniterm": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "run_medians": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "run_p95": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "herdr": {
+          "median": 0.9932522555091607,
+          "min": 0.9799228605769403,
+          "max": 1.0032562114866859,
+          "run_medians": [
+            0.9799228605769403,
+            0.9932522555091607,
+            1.0032562114866859
+          ],
+          "run_p95": [
+            0.9799228605769403,
+            0.9932522555091607,
+            1.0032562114866859
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "tmux": {
+          "median": 0.003333083097453479,
+          "min": 0.003333080787579704,
+          "max": 0.006666187595628834,
+          "run_medians": [
+            0.006666187595628834,
+            0.003333080787579704,
+            0.003333083097453479
+          ],
+          "run_p95": [
+            0.006666187595628834,
+            0.003333080787579704,
+            0.003333083097453479
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        }
+      }
+    },
+    "multipane_16_idle_root_rss": {
+      "unit": "KiB",
+      "direction": "lower",
+      "classification": "context",
+      "contenders": {
+        "uniterm": {
+          "median": 14108.0,
+          "min": 14048.0,
+          "max": 14120.0,
+          "run_medians": [
+            14120.0,
+            14048.0,
+            14108.0
+          ],
+          "run_p95": [
+            14120.0,
+            14048.0,
+            14108.0
+          ],
+          "run_sample_counts": [
+            574,
+            574,
+            575
+          ]
+        },
+        "herdr": {
+          "median": 40444.0,
+          "min": 40244.0,
+          "max": 40472.0,
+          "run_medians": [
+            40472.0,
+            40444.0,
+            40244.0
+          ],
+          "run_p95": [
+            40476.0,
+            40444.0,
+            40248.0
+          ],
+          "run_sample_counts": [
+            574,
+            574,
+            574
+          ]
+        },
+        "tmux": {
+          "median": 12956.0,
+          "min": 12876.0,
+          "max": 12972.0,
+          "run_medians": [
+            12876.0,
+            12956.0,
+            12972.0
+          ],
+          "run_p95": [
+            12876.0,
+            12956.0,
+            12972.0
+          ],
+          "run_sample_counts": [
+            575,
+            575,
+            575
+          ]
+        }
+      }
+    },
+    "multipane_process_count": {
+      "unit": "processes",
+      "direction": "neutral",
+      "classification": "context",
+      "contenders": {
+        "uniterm": {
+          "median": 18.0,
+          "min": 18.0,
+          "max": 18.0,
+          "run_medians": [
+            18.0,
+            18.0,
+            18.0
+          ],
+          "run_p95": [
+            18.0,
+            18.0,
+            18.0
+          ],
+          "run_sample_counts": [
+            574,
+            574,
+            575
+          ]
+        },
+        "herdr": {
+          "median": 18.0,
+          "min": 18.0,
+          "max": 18.0,
+          "run_medians": [
+            18.0,
+            18.0,
+            18.0
+          ],
+          "run_p95": [
+            18.0,
+            18.0,
+            18.0
+          ],
+          "run_sample_counts": [
+            574,
+            574,
+            574
+          ]
+        },
+        "tmux": {
+          "median": 18.0,
+          "min": 18.0,
+          "max": 18.0,
+          "run_medians": [
+            18.0,
+            18.0,
+            18.0
+          ],
+          "run_p95": [
+            18.0,
+            18.0,
+            18.0
+          ],
+          "run_sample_counts": [
+            575,
+            575,
+            575
+          ]
+        }
+      }
+    },
+    "multipane_suite_shutdown": {
+      "unit": "ms",
+      "direction": "lower",
+      "classification": "context",
+      "contenders": {
+        "uniterm": {
+          "median": 44.694157999999995,
+          "min": 44.163427,
+          "max": 46.153091,
+          "run_medians": [
+            44.163427,
+            46.153091,
+            44.694157999999995
+          ],
+          "run_p95": [
+            44.163427,
+            46.153091,
+            44.694157999999995
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "herdr": {
+          "median": 79.725613,
+          "min": 79.649181,
+          "max": 79.999954,
+          "run_medians": [
+            79.999954,
+            79.649181,
+            79.725613
+          ],
+          "run_p95": [
+            79.999954,
+            79.649181,
+            79.725613
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "tmux": {
+          "median": 24.552132,
+          "min": 24.034472,
+          "max": 24.572085,
+          "run_medians": [
+            24.034472,
+            24.552132,
+            24.572085
+          ],
+          "run_p95": [
+            24.034472,
+            24.552132,
+            24.572085
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        }
+      }
+    },
+    "pane_close_recovery": {
+      "unit": "%",
+      "direction": "higher",
+      "classification": "context",
+      "contenders": {
+        "uniterm": {
+          "median": 96.12570960379236,
+          "min": 96.04391774137329,
+          "max": 96.29088785046729,
+          "run_medians": [
+            96.04391774137329,
+            96.12570960379236,
+            96.29088785046729
+          ],
+          "run_p95": [
+            96.04391774137329,
+            96.12570960379236,
+            96.29088785046729
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "herdr": {
+          "median": 93.89538058316043,
+          "min": 93.31976008364057,
+          "max": 94.01040240897892,
+          "run_medians": [
+            93.31976008364057,
+            93.89538058316043,
+            94.01040240897892
+          ],
+          "run_p95": [
+            93.31976008364057,
+            93.89538058316043,
+            94.01040240897892
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "tmux": {
+          "median": 99.86128701525843,
+          "min": 99.86107755496498,
+          "max": 99.86658580958157,
+          "run_medians": [
+            99.86128701525843,
+            99.86658580958157,
+            99.86107755496498
+          ],
+          "run_p95": [
+            99.86128701525843,
+            99.86658580958157,
+            99.86107755496498
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        }
+      }
+    },
+    "pane_close_rss": {
+      "unit": "KiB",
+      "direction": "lower",
+      "classification": "context",
+      "contenders": {
+        "uniterm": {
+          "median": 18500.0,
+          "min": 18492.0,
+          "max": 18548.0,
+          "run_medians": [
+            18548.0,
+            18492.0,
+            18500.0
+          ],
+          "run_p95": [
+            18548.0,
+            18492.0,
+            18620.0
+          ],
+          "run_sample_counts": [
+            21,
+            21,
+            21
+          ]
+        },
+        "herdr": {
+          "median": 42356.0,
+          "min": 42040.0,
+          "max": 43068.0,
+          "run_medians": [
+            43068.0,
+            42356.0,
+            42040.0
+          ],
+          "run_p95": [
+            43068.0,
+            42356.0,
+            42040.0
+          ],
+          "run_sample_counts": [
+            21,
+            21,
+            21
+          ]
+        },
+        "tmux": {
+          "median": 17356.0,
+          "min": 17212.0,
+          "max": 17412.0,
+          "run_medians": [
+            17212.0,
+            17412.0,
+            17356.0
+          ],
+          "run_p95": [
+            17212.0,
+            17412.0,
+            17356.0
+          ],
+          "run_sample_counts": [
+            21,
+            21,
+            21
+          ]
+        }
+      }
+    },
+    "pane_memory_slope": {
+      "unit": "KiB/pane",
+      "direction": "lower",
+      "classification": "context",
+      "contenders": {
+        "uniterm": {
+          "median": 4550.858823529412,
+          "min": 4547.7,
+          "max": 4578.9,
+          "run_medians": [
+            4578.9,
+            4547.7,
+            4550.858823529412
+          ],
+          "run_p95": [
+            4578.9,
+            4547.7,
+            4550.858823529412
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "herdr": {
+          "median": 4823.658823529412,
+          "min": 4799.2588235294115,
+          "max": 4828.070588235294,
+          "run_medians": [
+            4799.2588235294115,
+            4828.070588235294,
+            4823.658823529412
+          ],
+          "run_p95": [
+            4799.2588235294115,
+            4828.070588235294,
+            4823.658823529412
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "tmux": {
+          "median": 4398.717647058824,
+          "min": 4397.947058823529,
+          "max": 4417.4,
+          "run_medians": [
+            4417.4,
+            4397.947058823529,
+            4398.717647058824
+          ],
+          "run_p95": [
+            4417.4,
+            4397.947058823529,
+            4398.717647058824
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        }
+      }
+    },
+    "resize_storm_cpu": {
+      "unit": "ms CPU",
+      "direction": "lower",
+      "classification": "context",
+      "contenders": {
+        "uniterm": {
+          "median": 59.99999999999961,
+          "min": 50.00000000000071,
+          "max": 59.99999999999961,
+          "run_medians": [
+            50.00000000000071,
+            59.99999999999961,
+            59.99999999999961
+          ],
+          "run_p95": [
+            50.00000000000071,
+            59.99999999999961,
+            59.99999999999961
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "herdr": {
+          "median": 90.00000000000163,
+          "min": 89.99999999999986,
+          "max": 99.99999999999964,
+          "run_medians": [
+            90.00000000000163,
+            99.99999999999964,
+            89.99999999999986
+          ],
+          "run_p95": [
+            90.00000000000163,
+            99.99999999999964,
+            89.99999999999986
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "tmux": {
+          "median": 9.999999999999787,
+          "min": 0.0,
+          "max": 20.000000000000462,
+          "run_medians": [
+            0.0,
+            20.000000000000462,
+            9.999999999999787
+          ],
+          "run_p95": [
+            0.0,
+            20.000000000000462,
+            9.999999999999787
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        }
+      }
+    },
+    "resize_storm_rss": {
+      "unit": "KiB",
+      "direction": "lower",
+      "classification": "context",
+      "contenders": {
+        "uniterm": {
+          "median": 43116.0,
+          "min": 42992.0,
+          "max": 43196.0,
+          "run_medians": [
+            43116.0,
+            42992.0,
+            43196.0
+          ],
+          "run_p95": [
+            43116.0,
+            42992.0,
+            43196.0
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "herdr": {
+          "median": 50120.0,
+          "min": 48660.0,
+          "max": 50196.0,
+          "run_medians": [
+            50120.0,
+            48660.0,
+            50196.0
+          ],
+          "run_p95": [
+            50120.0,
+            48660.0,
+            50196.0
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "tmux": {
+          "median": 18388.0,
+          "min": 18336.0,
+          "max": 18576.0,
+          "run_medians": [
+            18336.0,
+            18388.0,
+            18576.0
+          ],
+          "run_p95": [
+            18336.0,
+            18388.0,
+            18576.0
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        }
+      }
+    },
+    "resize_storm_settle": {
+      "unit": "ms",
+      "direction": "lower",
+      "classification": "context",
+      "contenders": {
+        "uniterm": {
+          "median": 22.024663999999998,
+          "min": 13.548053,
+          "max": 22.807976,
+          "run_medians": [
+            22.024663999999998,
+            13.548053,
+            22.807976
+          ],
+          "run_p95": [
+            22.024663999999998,
+            13.548053,
+            22.807976
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "herdr": {
+          "median": 269.936405,
+          "min": 265.928287,
+          "max": 275.697898,
+          "run_medians": [
+            275.697898,
+            265.928287,
+            269.936405
+          ],
+          "run_p95": [
+            275.697898,
+            265.928287,
+            269.936405
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "tmux": {
+          "median": 207.047127,
+          "min": 206.938518,
+          "max": 209.265272,
+          "run_medians": [
+            206.938518,
+            209.265272,
+            207.047127
+          ],
+          "run_p95": [
+            206.938518,
+            209.265272,
+            207.047127
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        }
+      }
+    },
+    "restart_ready": {
+      "unit": "ms",
+      "direction": "neutral",
+      "classification": "context",
+      "contenders": {
+        "uniterm": {
+          "median": 9.371785000000001,
+          "min": 8.829201999999999,
+          "max": 9.473946,
+          "run_medians": [
+            9.371785000000001,
+            9.473946,
+            8.829201999999999
+          ],
+          "run_p95": [
+            9.371785000000001,
+            9.473946,
+            8.829201999999999
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "herdr": {
+          "median": 53.127845,
+          "min": 52.474106,
+          "max": 53.882211,
+          "run_medians": [
+            53.127845,
+            53.882211,
+            52.474106
+          ],
+          "run_p95": [
+            53.127845,
+            53.882211,
+            52.474106
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        },
+        "tmux": {
+          "median": 16.389137,
+          "min": 16.098426,
+          "max": 16.717964,
+          "run_medians": [
+            16.098426,
+            16.717964,
+            16.389137
+          ],
+          "run_p95": [
+            16.098426,
+            16.717964,
+            16.389137
+          ],
+          "run_sample_counts": [
+            1,
+            1,
+            1
+          ]
+        }
+      }
+    },
+    "server_shutdown": {
+      "unit": "ms",
+      "direction": "lower",
+      "classification": "context",
+      "contenders": {
+        "uniterm": {
+          "median": 45.052211,
+          "min": 44.040191500000006,
+          "max": 47.550992,
+          "run_medians": [
+            47.550992,
+            45.052211,
+            44.040191500000006
+          ],
+          "run_p95": [
+            50.371402599999996,
+            47.3392175,
+            48.560130699999995
+          ],
+          "run_sample_counts": [
+            20,
+            20,
+            20
+          ]
+        },
+        "herdr": {
+          "median": 305.419077,
+          "min": 305.2906425,
+          "max": 305.498108,
+          "run_medians": [
+            305.2906425,
+            305.419077,
+            305.498108
+          ],
+          "run_p95": [
+            346.41537695000005,
+            343.2737966,
+            346.15461875
+          ],
+          "run_sample_counts": [
+            20,
+            20,
+            20
+          ]
+        },
+        "tmux": {
+          "median": 25.5004535,
+          "min": 25.492253499999997,
+          "max": 27.409931,
+          "run_medians": [
+            27.409931,
+            25.492253499999997,
+            25.5004535
+          ],
+          "run_p95": [
+            30.403448200000003,
+            27.938940699999996,
+            26.713698400000002
+          ],
+          "run_sample_counts": [
+            20,
+            20,
+            20
+          ]
+        }
+      }
+    },
+    "terminal_output_ingest_rate": {
+      "unit": "MiB/s",
+      "direction": "higher",
+      "classification": "context",
+      "contenders": {
+        "uniterm": {
+          "median": 8.746544646479308,
+          "min": 8.618301905393796,
+          "max": 8.790059986299603,
+          "run_medians": [
+            8.746544646479308,
+            8.618301905393796,
+            8.790059986299603
+          ],
+          "run_p95": [
+            8.935154763407603,
+            8.755186612468465,
+            9.003612648380765
+          ],
+          "run_sample_counts": [
+            10,
+            10,
+            10
+          ]
+        },
+        "herdr": {
+          "median": 9.212969857331279,
+          "min": 9.184828744776082,
+          "max": 9.238362636762968,
+          "run_medians": [
+            9.212969857331279,
+            9.238362636762968,
+            9.184828744776082
+          ],
+          "run_p95": [
+            9.317912876048247,
+            9.701148555328455,
+            9.636959168015673
+          ],
+          "run_sample_counts": [
+            10,
+            10,
+            10
+          ]
+        },
+        "tmux": {
+          "median": 8.780348358205998,
+          "min": 8.67504899422284,
+          "max": 8.969740046110154,
+          "run_medians": [
+            8.780348358205998,
+            8.969740046110154,
+            8.67504899422284
+          ],
+          "run_p95": [
+            8.975445729482647,
+            9.183136183847804,
+            8.9267736839844
+          ],
+          "run_sample_counts": [
+            10,
+            10,
+            10
+          ]
+        }
+      }
+    }
+  }
+}
