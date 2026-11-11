@@ -1,0 +1,215 @@
+# Assurance reviewed for Uniterm v1.0.3 (2a6da6bf) and Herdr stable v0.8.2 (9eb52145), 2026-09-05.
+[comparison]
+title = "Uniterm vs Herdr performance and assurance report"
+seed = 20260903
+keep_workdirs = false
+
+[[contenders]]
+id = "uniterm"
+display_name = "Uniterm (ut)"
+adapter = "uniterm"
+binary = ".artifacts/uniterm-v1.0.3-target/release/ut"
+source = ".artifacts/uniterm-v1.0.3-src"
+
+[[contenders.assurance]]
+category = "security"
+criterion = "Memory-safety boundary"
+status = "pass"
+summary = "First-party implementation is Rust; platform unsafe is concentrated in small PTY, process-watch, client-terminal, and detached-spawn wrappers (the added openpty shim is Android-only)."
+evidence = ["crates/uniterm-core/tests/no_forbidden_deps.rs", "crates/uniterm-server/src/process_watch.rs", "crates/uniterm-server/src/pty.rs", "crates/uniterm-cli/src/lib.rs"]
+
+[[contenders.assurance]]
+category = "security"
+criterion = "Local IPC access control"
+status = "pass"
+summary = "Runtime directories are forced to 0700 and both the Workspace socket and the per-Workspace control-API socket are chmod 0600 after bind, with stale cleanup that validates socket type and identity; there is no peer-credential check beyond file permissions."
+evidence = ["crates/uniterm-server/src/server/socket.rs", "crates/uniterm-server/src/control_api.rs", "crates/uniterm-server/tests/rename_session.rs"]
+
+[[contenders.assurance]]
+category = "security"
+criterion = "Untrusted protocol input bounds"
+status = "pass"
+summary = "Direction-specific frame caps are enforced before buffer growth, and the server bounds pending bytes, clients, accepts, and messages processed per readiness turn."
+evidence = ["crates/uniterm-proto/src/lib.rs", "crates/uniterm-server/src/server/io.rs", "crates/uniterm-server/src/control_api.rs"]
+
+[[contenders.assurance]]
+category = "security"
+criterion = "Crash-safe persistence"
+status = "pass"
+summary = "Snapshots use atomic replacement; event and catalog writes are ordered and acknowledged, with failed writes preventing unsafe checkpoint advancement. Instruction and artifact ledgers remain append-only."
+evidence = ["crates/uniterm-server/src/persist.rs", "crates/uniterm-server/src/eventlog.rs", "crates/uniterm-server/src/workspace_catalog.rs", "crates/uniterm-server/src/runtime/persistence.rs"]
+
+[[contenders.assurance]]
+category = "security"
+criterion = "Update integrity"
+status = "not_applicable"
+summary = "The reviewed build has no self-update or background download implementation; installation is an out-of-product HTTPS-only script that verifies a published SHA-256, so there is no in-product update trust path to score."
+evidence = ["Cargo.toml", "crates/", "install.sh", "install.sh"]
+
+[[contenders.assurance]]
+category = "security"
+criterion = "Extension trust boundary"
+status = "pass"
+summary = "The reviewed build has no plugin marketplace or third-party hook execution; provider detection reads declarative manifests, and external automation goes through the owner-only control API rather than in-process extensions."
+evidence = ["docs/03-system-architecture.md", "docs/19-control-api.md", "docs/22-provider-detection-manifests.md", "crates/uniterm-server/src/providers/mod.rs"]
+
+[[contenders.assurance]]
+category = "security"
+criterion = "Remote exposure and authentication"
+status = "pass"
+summary = "Local control stays on owner-only Unix sockets; the new remote attach delegates transport and authentication to the user's OpenSSH client, and detected development URLs open only by explicit user action. No listening network control API was found."
+evidence = ["crates/uniterm-server/src/server/socket.rs", "crates/uniterm-cli/src/remote.rs", "docs/14-ssh-remote-sessions.md", "crates/uniterm-client/src/actions.rs"]
+
+[[contenders.assurance]]
+category = "security"
+criterion = "Child-process containment"
+status = "pass"
+summary = "Pane children run in dedicated process groups; event-driven retirement applies TERM, a bounded grace period, KILL, and kernel exit reaping. Runtime shutdown remains bounded."
+evidence = ["crates/uniterm-server/src/pty.rs", "crates/uniterm-server/src/server/orchestration.rs", "crates/uniterm-server/src/runtime.rs", "crates/uniterm-server/src/server/reaper.rs"]
+
+[[contenders.assurance]]
+category = "privacy"
+criterion = "Telemetry and analytics"
+status = "pass"
+summary = "No telemetry or analytics sender was found in first-party source or dependencies; the core crate test forbids HTTP client crates."
+evidence = ["Cargo.toml", "Cargo.lock", "crates/uniterm-core/tests/no_forbidden_deps.rs"]
+
+[[contenders.assurance]]
+category = "privacy"
+criterion = "Default outbound network activity"
+status = "pass"
+summary = "No first-party HTTP client or background update/manifest fetcher is present; the only socket use is a loopback liveness probe for user-detected development servers."
+evidence = ["Cargo.toml", "Cargo.lock", "crates/uniterm-server/src/dev_server.rs"]
+
+[[contenders.assurance]]
+category = "privacy"
+criterion = "Local data retention"
+status = "partial"
+summary = "Workspace snapshots, event logs, the Workspace catalog, and run/instruction/artifact ledgers are persisted locally with owner-only modes and are not encrypted; the README now documents the state directory as sensitive."
+evidence = ["README.md", "crates/uniterm-server/src/persist.rs", "crates/uniterm-server/src/eventlog.rs", "crates/uniterm-server/src/workspace_catalog.rs"]
+
+[[contenders.assurance]]
+category = "privacy"
+criterion = "Clipboard and host-data access"
+status = "pass"
+summary = "Clipboard export uses OSC 52 for explicit selection/yank actions, including configured copy-on-select; file and URL actions are user initiated."
+evidence = ["crates/uniterm-server/src/copymode.rs", "README.md"]
+
+[[contenders.assurance]]
+category = "privacy"
+criterion = "Remote data path"
+status = "pass"
+summary = "Remote attach uses the user's own SSH connection to run the remote binary; no vendor relay or cloud path is implemented."
+evidence = ["crates/uniterm-cli/src/remote.rs", "docs/14-ssh-remote-sessions.md"]
+
+[[contenders.assurance]]
+category = "privacy"
+criterion = "Network controls"
+status = "pass"
+summary = "The application has no background network feature requiring an opt-out in the reviewed build."
+evidence = ["Cargo.toml", "Cargo.lock", "crates/uniterm-core/tests/no_forbidden_deps.rs"]
+
+[[contenders]]
+id = "herdr"
+display_name = "Herdr"
+adapter = "herdr"
+binary = ".artifacts/herdr-v0.8.2-target/release/herdr"
+source = ".artifacts/herdr-v0.8.2-src"
+
+[[contenders.assurance]]
+category = "security"
+criterion = "Memory-safety boundary"
+status = "partial"
+summary = "Most product code is Rust, but terminal emulation crosses a large generated C ABI and first-party unsafe wrapper surface into vendored Zig Ghostty code."
+evidence = ["src/ghostty/mod.rs", "src/ghostty/bindings.rs", "vendor/libghostty-vt/"]
+
+[[contenders.assurance]]
+category = "security"
+criterion = "Local IPC access control"
+status = "pass"
+summary = "Both API and client Unix sockets are explicitly reduced to owner read/write mode (0600), with stale-socket identity handling."
+evidence = ["src/server/socket_paths.rs", "src/api/server.rs", "src/ipc.rs"]
+
+[[contenders.assurance]]
+category = "security"
+criterion = "Untrusted protocol input bounds"
+status = "pass"
+summary = "Client frames, initial JSON requests, graphics streams, and clipboard/image payloads have explicit size caps and private protocol version negotiation. The later stable-endpoint compatibility layer is absent from this release tag."
+evidence = ["src/protocol/wire.rs", "src/api/server.rs", "src/api/server/pane_graphics_stream.rs"]
+
+[[contenders.assurance]]
+category = "security"
+criterion = "Crash-safe persistence"
+status = "pass"
+summary = "Session and plugin registry JSON writes use adjacent temporary files and rename, cleaning temporary files on replacement failure."
+evidence = ["src/persist/io.rs", "src/persist/plugin_registry.rs"]
+
+[[contenders.assurance]]
+category = "security"
+criterion = "Update integrity"
+status = "partial"
+summary = "Downloaded stable binaries now require a SHA-256 from the manifest and are atomically installed, but the expected hash is delivered by the same HTTPS manifest and no independent signature verification was found."
+evidence = ["src/update.rs", "src/update.rs", "src/update.rs", "src/checksum.rs"]
+
+[[contenders.assurance]]
+category = "security"
+criterion = "Extension trust boundary"
+status = "partial"
+summary = "Plugins run out of process and installs show a trust preview, but enabled plugins intentionally execute arbitrary manifest commands and hooks with user authority."
+evidence = ["src/plugin_command.rs", "src/app/api/plugins/runtime.rs", "docs/next/website/src/content/docs/plugins.mdx"]
+
+[[contenders.assurance]]
+category = "security"
+criterion = "Remote exposure and authentication"
+status = "pass"
+summary = "Remote attach delegates transport and authentication to OpenSSH; local control remains on owner-only sockets rather than a public TCP listener."
+evidence = ["src/remote/attach.rs", "src/remote/host_unix.rs", "docs/next/website/src/content/docs/persistence-remote.mdx"]
+
+[[contenders.assurance]]
+category = "security"
+criterion = "Child-process containment"
+status = "pass"
+summary = "Unix process-group termination and Windows Job Object handling are platform-isolated, with explicit child termination and server handoff handling."
+evidence = ["src/pty/actor/unix.rs", "src/platform/linux.rs", "src/platform/macos.rs", "src/platform/windows.rs"]
+
+[[contenders.assurance]]
+category = "privacy"
+criterion = "Telemetry and analytics"
+status = "pass"
+summary = "No telemetry or analytics submission was found; network features fetch product-controlled manifests and releases rather than sending usage events."
+evidence = ["src/update.rs", "src/detect/manifest_update.rs", "src/product_announcements.rs"]
+
+[[contenders.assurance]]
+category = "privacy"
+criterion = "Default outbound network activity"
+status = "partial"
+summary = "Version and agent-manifest checks are enabled by default and contact Herdr-controlled endpoints (product announcements ride on the version manifest); the benchmark disables both to remove network variance."
+evidence = ["src/config/model.rs", "src/app/mod.rs", "src/update.rs", "src/update.rs"]
+
+[[contenders.assurance]]
+category = "privacy"
+criterion = "Local data retention"
+status = "partial"
+summary = "Session metadata and optional screen history are persisted locally as readable JSON; there is no at-rest encryption."
+evidence = ["src/persist/io.rs", "docs/next/website/src/content/docs/session-state.mdx"]
+
+[[contenders.assurance]]
+category = "privacy"
+criterion = "Clipboard and host-data access"
+status = "pass"
+summary = "Clipboard/image reads are bounded and tied to explicit paste/copy interactions; remote clipboard bridging is an explicit action."
+evidence = ["src/server/clipboard_image.rs", "src/platform/macos.rs", "src/protocol/wire.rs"]
+
+[[contenders.assurance]]
+category = "privacy"
+criterion = "Remote data path"
+status = "pass"
+summary = "Remote access uses the user's SSH connection without a vendor relay service."
+evidence = ["src/remote/attach.rs", "docs/next/website/src/content/docs/persistence-remote.mdx"]
+
+[[contenders.assurance]]
+category = "privacy"
+criterion = "Network controls"
+status = "pass"
+summary = "Users can disable version and agent-manifest background checks independently in configuration."
+evidence = ["src/config/model.rs", "docs/next/website/src/content/docs/configuration.mdx"]
