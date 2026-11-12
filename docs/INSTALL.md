@@ -77,6 +77,13 @@ Note: if you previously had Uniterm Desktop installed, its `uniterm` executable 
 Prefer `ut`, or remove the old binary, so you are running this build.
 
 State is stored under the XDG directories: Workspace snapshots and event logs live in `$XDG_STATE_HOME/uniterm/` (default `~/.local/state/uniterm/`), and config is read from `$XDG_CONFIG_HOME/uniterm/uniterm.conf` (default `~/.config/uniterm/uniterm.conf`).
+Sockets normally live under `$XDG_RUNTIME_DIR/uniterm/`.
+If the variable points to a missing, relative, non-directory, foreign-owned, shared-writable, or unwritable directory, Uniterm warns once per process and uses its private `/tmp/uniterm-<uid>/uniterm/` fallback, also used when the variable is unset.
+Android instead uses the existing Termux temporary-directory fallback.
+Uniterm does not recreate or change permissions on the session manager's runtime directory.
+This handles stale WSL or SSH environments where the variable survives without a corresponding login session.
+Launch, attach, discovery, and stop share the same resolver; durable-state locks still prevent duplicate servers when sessions resolve different socket directories.
+
 Runtime and state directories are owner-only (0700), and Workspace sockets and state files are owner-only (0600).
 Snapshots and event logs can contain terminal output and project metadata, so treat the state directory as sensitive local data even though it is not sent anywhere or encrypted at rest.
 
