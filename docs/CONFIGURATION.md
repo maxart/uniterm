@@ -27,6 +27,7 @@ freeze-on-select = false   # hold the screen still while selecting; a drag selec
 copy-on-select = true      # copy a drag selection to the clipboard on release
 confirm-close = true
 restore = true             # resurrect a saved Workspace on start (alias: autosave)
+auto-trust-projects = true # accept only trust dialogs showing the exact owning Project root
 persist-auto-approve = false # opt in to keeping each Workspace's last ON/OFF choice
 ```
 
@@ -127,3 +128,13 @@ Idle never finishes work; manual status edits take precedence.
 Prompt capture is bounded and uses the existing Workspace event log.
 Turn this off to stop capture and automatic status changes while keeping existing records.
 See [direct work in Tasks](31-workspace-navigation-and-overwatch.md#direct-work-in-tasks) for discovery and retention limits.
+
+### Project directory trust
+
+**Workspace > Settings > Agents > Auto-trust Project directories** controls `auto-trust-projects`, default `true`.
+This is independent of tool Auto-approve, its restart preference, and Pane delegation.
+It accepts only complete bundled-provider trust dialogs showing the exact absolute owning Project root.
+Missing, ambiguous, parent, unrelated, truncated, relative, or differently spelled paths remain manual.
+Turning it OFF blocks automatic trust even while Auto-approve is ON; explicit waiting approval remains available.
+The preference is saved in machine configuration and takes effect immediately for all clients attached to the current Workspace.
+Other running Workspace servers load their own preference at startup.

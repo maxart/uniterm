@@ -110,7 +110,7 @@ fn default_policies_install_all_providers_preserve_user_config_and_retry_failure
         ".kiro/agents/kiro_default.json",
         ".cursor/hooks.json",
         ".pi/agent/extensions/uniterm-notify.ts",
-        ".config/opencode/plugins/uniterm-notify/index.ts",
+        ".config/opencode/uniterm-notify/index.ts",
     ]
     .iter()
     .map(|path| fixture.root.join(path))
@@ -208,6 +208,136 @@ fn default_policies_install_all_providers_preserve_user_config_and_retry_failure
     assert!(!fs::read_to_string(&paths[0])
         .unwrap()
         .contains("previous build"));
+}
+
+#[test]
+fn immutable_opencode_config_probes_once_and_recovers_when_writable() {
+    use std::os::unix::fs::symlink;
+    // SAFETY: geteuid has no arguments or preconditions; root bypasses chmod.
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    struct RestorePermissions(PathBuf);
+    impl Drop for RestorePermissions {
+        fn drop(&mut self) {
+            let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o755));
+        }
+    }
+    let fixture = Fixture {
+        root: common::temp_dir("opencode-immutable"),
+        state: common::isolate_state(),
+    };
+    let config = fixture.root.join(".config/opencode");
+    let store = fixture.root.join("store");
+    for path in [&config, &store, &fixture.root.join("bin")] {
+        fs::create_dir_all(path).unwrap();
+    }
+    fs::write(
+        store.join("opencode.json"),
+        "{\"plugin\":[\"user-plugin\"]}",
+    )
+    .unwrap();
+    symlink(store.join("opencode.json"), config.join("opencode.json")).unwrap();
+    let executable = fixture.root.join("bin/opencode");
+    fs::write(
+        &executable,
+        "#!/bin/sh\nprintf 'probe\\n' >> \"$HOME/probes\"\nprintf '1.2.27\\n'\n",
+    )
+    .unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+    let _restore = RestorePermissions(store.clone());
+    fs::set_permissions(&store, fs::Permissions::from_mode(0o555)).unwrap();
+    fixture.ok(&["agent", "connector", "auto-update"]);
+    let probes = fs::read(fixture.root.join("probes")).unwrap();
+    assert!(config.join("plugins/uniterm-notify.ts").exists());
+    fixture.ok(&["agent", "connector", "auto-update"]);
+    assert_eq!(fs::read(fixture.root.join("probes")).unwrap(), probes);
+    fs::set_permissions(&store, fs::Permissions::from_mode(0o755)).unwrap();
+    fixture.ok(&["agent", "connector", "auto-update"]);
+    assert!(!config.join("plugins/uniterm-notify.ts").exists());
+    assert!(!config.join("uniterm-notify/readonly-fallback").exists());
+    assert!(fs::read_to_string(store.join("opencode.json"))
+        .unwrap()
+        .contains("./uniterm-notify"));
+    assert_eq!(fs::read(fixture.root.join("probes")).unwrap(), probes);
+}
+
+#[test]
+fn fresh_startup_installs_connectors_before_readiness_without_running_agent_clis() {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+    use std::process::{Child, Stdio};
+    struct ChildGuard(Child);
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let fixture = Fixture {
+        root: common::temp_dir("startup-no-probe"),
+        state: common::isolate_state(),
+    };
+    let runtime = common::socket_root().join(format!("np-{}", common::unique_nonce()));
+    fs::create_dir_all(&runtime).unwrap();
+    fs::create_dir_all(fixture.root.join("bin")).unwrap();
+    let cli = fixture.root.join("bin/opencode");
+    fs::write(&cli, "#!/bin/sh\nprintf called > \"$PROBE_FILE\"\nexit 1\n").unwrap();
+    fs::set_permissions(&cli, fs::Permissions::from_mode(0o755)).unwrap();
+    let probe = fixture.root.join("unexpected-probe");
+    let workspace = common::unique_workspace_name();
+    let mut child = ChildGuard(
+        fixture
+            .process(&["serve", &workspace, "--startup-notify"])
+            .env("XDG_RUNTIME_DIR", &runtime)
+            .env("SHELL", "/bin/sh")
+            .env("PROBE_FILE", &probe)
+            .current_dir(&fixture.root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let socket = runtime.join("uniterm").join(format!("{workspace}.sock"));
+    common::wait_for_socket(&socket);
+    let mut stdout = child.0.stdout.take().unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut ready = [0];
+        let result = stdout.read_exact(&mut ready).map(|()| ready);
+        let _ = sender.send(result);
+    });
+    let ready = receiver
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("server did not report readiness within ten seconds")
+        .expect("server exited before readiness");
+    reader.join().unwrap();
+    assert_eq!(ready, [b'R']);
+    assert!(!probe.exists());
+    let config = fixture.root.join(".config/opencode");
+    assert!(config.join("uniterm-notify/index.ts").exists());
+    assert!(config.join("uniterm-notify/server.ts").exists());
+    assert!(config.join("plugins/uniterm-notify/tui.ts").exists());
+    assert!(fs::read_to_string(config.join("opencode.json"))
+        .unwrap()
+        .contains("./uniterm-notify"));
+    let mut stream = UnixStream::connect(socket).unwrap();
+    stream
+        .write_all(&uniterm_proto::encode_frame(
+            &uniterm_proto::ClientMessage::KillServer,
+        ))
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Some(status) = child.0.try_wait().unwrap() {
+            assert!(status.success());
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "server did not stop");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    fs::remove_dir_all(runtime).unwrap();
 }
 
 #[test]

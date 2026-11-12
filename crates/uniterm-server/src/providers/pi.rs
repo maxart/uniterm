@@ -114,6 +114,8 @@ pub(super) const APPROVAL_DIALOGS: &[super::approval::Dialog] = &[super::approva
     headings: &["project trust"],
     allow: &["trust", "trust (this session only)"],
     deny: &["do not trust", "do not trust (this session only)"],
+    alternatives: &[],
+    kind: super::approval::ApprovalKind::WorkspaceTrust,
 }];
 
 /// Pi puts its task summary after a stable application marker.

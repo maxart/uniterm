@@ -27,6 +27,7 @@ shell-words.workspace = true
 sha2.workspace = true
 # Optional protected local state uses authenticated encryption on runtime workers.
 chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc", "zeroize"] }
+jsonc-parser = { version = "0.34.0", features = ["cst"] }
 
 [[example]]
 name = "render_spike"

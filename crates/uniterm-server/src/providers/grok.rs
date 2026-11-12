@@ -99,6 +99,8 @@ pub(super) const APPROVAL_DIALOGS: &[super::approval::Dialog] = &[super::approva
     ],
     allow: &["allow once", "allow (once)", "yes"],
     deny: &["reject once", "reject", "deny"],
+    alternatives: &[],
+    kind: super::approval::ApprovalKind::Permission,
 }];
 
 /// Grok 1.x uses numbered radio buttons, with the one-time option third.
@@ -178,5 +180,7 @@ fn trust_approval(screen: &str) -> Option<super::Approval> {
     {
         return None;
     }
-    Some(super::approval::fingerprint(&lines[..start + 4], b"y"))
+    let mut choice = super::approval::fingerprint(&lines[..start + 4], b"y");
+    choice.kind = super::approval::ApprovalKind::WorkspaceTrust;
+    Some(choice)
 }

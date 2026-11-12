@@ -31,7 +31,7 @@ mod opencode;
 mod pi;
 mod qoder;
 mod qodercli;
-pub(crate) use approval::Approval;
+pub(crate) use approval::{Approval, ApprovalKind};
 pub(crate) mod sessions;
 
 /// Recognize an actionable permission using bundled provider rules only.

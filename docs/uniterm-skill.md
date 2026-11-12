@@ -251,9 +251,12 @@ When the human requests an upgrade, `ut update` verifies and replaces both local
 About > Update and Settings > Update Uniterm open the same updater and ask before installing.
 Updates leave running Workspace servers intact; do not stop or restart them unless the human requests it.
 
-Permission automation is an explicit human choice: `ut agent auto-approve on|off|status [-w Workspace]`.
+Project directory trust has a separate default-ON setting: **Settings > Agents > Auto-trust Project directories** (`auto-trust-projects`).
+Only a complete dialog showing the exact owning Project root qualifies; unknown and unrelated paths remain manual.
+Turning this setting OFF prevents automatic trust independently of tool Auto-approve.
+Permission automation for tool requests is a separate explicit human choice: `ut agent auto-approve on|off|status [-w Workspace]`.
 Both on and off apply immediately, without a second confirmation.
-Recognized folder trust and tool permission dialogs are handled on output, before the status notification dwell.
+Recognized dialogs are handled on output, before the status notification dwell.
 Do not enable it on an agent's initiative; it applies to recognized permission dialogs across the selected Workspace and resets on server restart.
 Use `ut waiting approve ID` for one reviewed recognized permission; unknown dialogs and questions remain waiting.
 See [permission automation](28-permission-automation.md).

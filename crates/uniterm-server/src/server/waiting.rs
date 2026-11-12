@@ -45,13 +45,13 @@ impl Server {
         }
     }
 
-    /// Called only by output, status transitions, and an explicit toggle.
-    /// Disabled mode only checks explicit pending manual navigation; idle has no work.
+    /// Output-driven trust and tool policies are independent; neither arms a timer.
     pub(super) fn maybe_auto_approve(&mut self, reg: &Registry, pane: PaneId) {
-        let automatic = !self.delegation_suppressed(pane)
+        let permission_automation = !self.delegation_suppressed(pane)
             && (self.auto_approval.enabled() || self.delegated.contains_key(&pane));
-        if automatic || self.auto_approval.pending_manual(pane) {
-            self.approve_permission(reg, pane, automatic, !automatic);
+        let continuation = self.auto_approval.pending_manual(pane);
+        if permission_automation || continuation || self.config.auto_trust_projects {
+            self.approve_permission(reg, pane, permission_automation, continuation, true);
         }
     }
 
@@ -59,8 +59,9 @@ impl Server {
         &mut self,
         reg: &Registry,
         pane: PaneId,
-        automatic: bool,
+        permission_automation: bool,
         continuation: bool,
+        automatic_request: bool,
     ) -> bool {
         if self.durability_error.is_some() || !self.event_writes_enabled {
             return false;
@@ -71,9 +72,7 @@ impl Server {
         let Some(agent) = target.agent.as_ref() else {
             return false;
         };
-        if (!automatic && agent.status != AgentStatus::Permission)
-            || target.input.len() != target.input_offset
-        {
+        if target.input.len() != target.input_offset {
             return false;
         }
         // Recheck the kernel's owner, not only the cached detection pid.
@@ -89,6 +88,31 @@ impl Server {
         let Some(choice) = crate::providers::permission_approval(&agent.id, &target.term) else {
             return false;
         };
+        let automatic = automatic_request && !continuation;
+        if automatic {
+            match choice.kind {
+                crate::providers::ApprovalKind::Permission if !permission_automation => {
+                    return false
+                }
+                crate::providers::ApprovalKind::WorkspaceTrust => {
+                    if !self.config.auto_trust_projects {
+                        return false;
+                    }
+                    let Some(directory) = choice.directory.as_deref() else {
+                        return false;
+                    };
+                    // Exact absolute paths fail closed for aliases, symlinks,
+                    // subdirectories and unknown roots, without filesystem I/O.
+                    if self.project_root_for_pane(pane).as_deref() != Some(directory) {
+                        return false;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !automatic && agent.status != AgentStatus::Permission {
+            return false;
+        }
         if continuation
             && !self
                 .auto_approval
@@ -102,7 +126,11 @@ impl Server {
         {
             return false;
         }
-        if automatic && !self.delegation_allows(pane, choice.fingerprint) {
+        if automatic
+            && permission_automation
+            && choice.kind == crate::providers::ApprovalKind::Permission
+            && !self.delegation_allows(pane, choice.fingerprint)
+        {
             return false;
         }
         self.append_event(crate::eventlog::LogEvent::PermissionApprovalAttempt {
@@ -120,7 +148,11 @@ impl Server {
             accepted,
         });
         if accepted {
-            if automatic && choice.navigation.is_none() {
+            if automatic
+                && permission_automation
+                && choice.kind == crate::providers::ApprovalKind::Permission
+                && choice.navigation.is_none()
+            {
                 self.delegation_delivered(pane);
             }
             self.auto_approval.delivered(
@@ -346,7 +378,7 @@ impl Server {
             uniterm_proto::WaitingAction::Approve => (
                 true,
                 item.kind == uniterm_core::WaitingKind::Permission
-                    && self.approve_permission(reg, item.pane, false, false),
+                    && self.approve_permission(reg, item.pane, false, false, false),
             ),
             uniterm_proto::WaitingAction::Focus => (true, self.focus_pane_target(reg, item.pane)),
             uniterm_proto::WaitingAction::Answer => {
@@ -497,5 +529,139 @@ impl Server {
                 (true, true)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::reaper::common;
+    use super::*;
+
+    fn fixture() -> (Server, Poll, PaneId) {
+        common::isolate_state();
+        let name = common::unique_workspace_name();
+        let dir = common::socket_root().join(&name);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut server, poll) = Server::bind_internal(
+            &dir.join(format!("{name}.sock")),
+            "/bin/sh",
+            &[],
+            120,
+            30,
+            false,
+        )
+        .unwrap();
+        server.event_writes_enabled = true;
+        let pane = server.windows[0].active;
+        server.bind_agent(pane, "codex");
+        (server, poll, pane)
+    }
+
+    #[test]
+    fn project_trust_is_scoped_independent_and_deduplicated() {
+        let (mut server, mut poll, pane) = fixture();
+        server.projects[0].root = "/Work/Project".into();
+        for provider in uniterm_core::agent::PROVIDERS {
+            let provider = crate::providers::launch_manifest(provider.id).unwrap();
+            for provider in std::iter::once(provider.id).chain(provider.executables.iter().copied())
+            {
+                server.bind_agent(pane, provider);
+                for trust in [false, true] {
+                    for tools in [false, true] {
+                        for directory in [
+                            "/Work/Project",
+                            "/Work",
+                            "/other",
+                            "",
+                            "/work/project",
+                            "/Work/Project/subdir",
+                            "/Work/Project/../other",
+                            "/Work/Project\r\n/other",
+                        ] {
+                            server.auto_approval = Default::default();
+                            server.auto_approval.set_enabled(tools);
+                            server.config.auto_trust_projects = trust;
+                            let screen = format!("\x1b[2J\x1b[HTrust this workspace?\r\n{directory}\r\n❯ Yes, trust this workspace\r\nNo, exit\r\nEnter to confirm · Esc to cancel");
+                            server
+                                .panes
+                                .get_mut(&pane)
+                                .unwrap()
+                                .term
+                                .feed(screen.as_bytes());
+                            server.maybe_auto_approve(poll.registry(), pane);
+                            let expected = trust && directory == "/Work/Project";
+                            assert_eq!(
+                                server.auto_approval.has_delivery(pane),
+                                expected,
+                                "{provider}: trust={trust}, tools={tools}, directory={directory:?}"
+                            );
+                            let sequence = server.log.current_sequence();
+                            server.maybe_auto_approve(poll.registry(), pane);
+                            assert_eq!(server.log.current_sequence(), sequence, "unchanged output");
+                        }
+                    }
+                }
+            }
+        }
+        server.retire_all_ptys(&mut poll);
+    }
+
+    #[test]
+    fn explicit_trust_approval_can_continue_when_automatic_trust_is_off() {
+        let (mut server, mut poll, pane) = fixture();
+        server.config.auto_trust_projects = false;
+        server
+            .panes
+            .get_mut(&pane)
+            .unwrap()
+            .agent
+            .as_mut()
+            .unwrap()
+            .status = AgentStatus::Permission;
+        let screen = "\x1b[2J\x1b[HTrust this workspace?\r\nUnknown directory\r\n> No, exit\r\nYes, trust this workspace\r\nEsc to cancel";
+        server
+            .panes
+            .get_mut(&pane)
+            .unwrap()
+            .term
+            .feed(screen.as_bytes());
+        server.maybe_auto_approve(poll.registry(), pane);
+        assert!(!server.auto_approval.has_delivery(pane));
+        assert!(server.approve_permission(poll.registry(), pane, false, false, false));
+        assert!(server.auto_approval.pending_manual(pane));
+        server.panes.get_mut(&pane).unwrap().term.feed(
+            screen
+                .replace(
+                    "> No, exit\r\nYes, trust this workspace",
+                    "No, exit\r\n> Yes, trust this workspace",
+                )
+                .as_bytes(),
+        );
+        server.maybe_auto_approve(poll.registry(), pane);
+        assert!(!server.auto_approval.pending_manual(pane));
+        assert!(server.auto_approval.has_delivery(pane));
+        assert!(!server.auto_approval.enabled());
+        server.retire_all_ptys(&mut poll);
+    }
+
+    #[test]
+    fn project_trust_setting_enables_visible_prompt_without_tool_authority() {
+        let (mut server, mut poll, pane) = fixture();
+        server.projects[0].root = "/Work/Project".into();
+        server.config.auto_trust_projects = false;
+        server.panes.get_mut(&pane).unwrap().term.feed(b"\x1b[2J\x1b[HTrust this workspace?\r\n/Work/Project\r\n> Yes, trust this workspace\r\nNo, exit\r\nEnter to confirm, Esc to cancel");
+        server.maybe_auto_approve(poll.registry(), pane);
+        assert!(!server.auto_approval.has_delivery(pane));
+        let patch = uniterm_proto::SettingsPatch {
+            auto_trust_projects: Some(true),
+            ..Default::default()
+        };
+        server.apply_settings(poll.registry(), Token(9999), patch.clone());
+        assert!(server.auto_approval.has_delivery(pane));
+        assert!(!server.auto_approval.enabled());
+        let sequence = server.log.current_sequence();
+        server.apply_settings(poll.registry(), Token(9999), patch);
+        assert_eq!(server.log.current_sequence(), sequence);
+        server.retire_all_ptys(&mut poll);
     }
 }

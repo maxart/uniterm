@@ -7,12 +7,10 @@ Run a dozen agents, keep every one of them in view, and stop wondering which is 
 Uniterm puts that answer in a rail beside your terminals, queues the moments that need a human, and lets you hand direction to a busy agent without racing its input.
 Underneath, it is the multiplexer you already live in all day: persistent Workspaces with Projects, Tabs, and Panes, splits, zoom, copy-mode, and a save and restore that brings back layout, working directories, and scrollback after a detach, a crash, or a reboot.
 
-It is fast and it is small.
-A Workspace is ready before you have finished reaching for the next key, and what you type lands on screen as fast as your terminal can draw it.
-Detach for the night and Uniterm sits perfectly still, so your laptop stays cool and quiet while a whole fleet of Panes waits for you to come back.
-It fits on the machine in front of you and on the one at the other end of an SSH connection, and it leaves the memory to your agents.
+Uniterm updates only changed terminal cells and avoids periodic idle work.
+Use it locally or over SSH.
 
-That is a result of what Uniterm refuses to be, not of tuning:
+Its core design:
 
 - **One binary, nothing bolted on.**
   No webview, no embedded terminal engine, no libghostty, no plugin runtime.
@@ -20,7 +18,7 @@ That is a result of what Uniterm refuses to be, not of tuning:
 - **It owns the grid.**
   Every byte an agent prints goes through Uniterm's own terminal model, so knowing whether an agent is working, idle, or asking for permission is a read of state it already holds, never a scrape of a pane on a timer.
 - **The kernel does the watching.**
-  Process exits arrive as kernel events instead of polling, and the renderer emits only the cells that changed, so an idle fleet draws nothing and costs nothing.
+  Process exits arrive as kernel events instead of polling, and unchanged terminal cells require no redraw.
 - **Persistence that tmux plugins cannot match.**
   Layout and scrollback are snapshotted atomically and continuously, and a clean stop keeps the run history and audit trail, because a multiplexer for agents has to survive the agents.
 - **Any agent, no lock-in.**
@@ -28,8 +26,6 @@ That is a result of what Uniterm refuses to be, not of tuning:
 - **The fleet can run itself.**
   Everything you can do at the keyboard, an agent inside a Pane can do with `ut`: start and stop other agents, read their screens, send them text, queue direction, answer the waiting queue, and organise Tabs and Projects.
   A harness-neutral skill teaches any agent how, so one lead agent can dispatch and supervise the rest while you watch the rail.
-- **Your data never leaves your machine.**
-  No telemetry, no update checks, no accounts; the only network use is your own SSH connection.
 
 ## Set up
 
@@ -81,36 +77,26 @@ The full list, with the test behind each claim, is in [docs/FEATURES.md](docs/FE
 
 ## How Uniterm compares
 
-The latest comparison measures Uniterm **v1.0.4** (`a961519c5ed9`) against Herdr **stable v0.8.2** (`9eb521456ac0`) and **tmux 3.7c** (`e476c1230b95`).
-An open harness drove all three release binaries through identical PTY workloads on one Linux x86_64 host on 2026-09-05.
-Values below are medians of three rotated marketing-run medians; differences within one percent are ties.
+Measured on 2026-11-12: Uniterm development commit `4274e426e`, Herdr stable 0.9.5 and tmux 3.8 on the same Linux host.
+Three unchanged marketing runs used five-minute idle windows and identical PTY workloads; these are medians of run medians.
 
-| Metric | Uniterm | Herdr | tmux | Result |
-| --- | ---: | ---: | ---: | --- |
-| Server start to ready | 8.23 ms | 44.85 ms | 15.49 ms | Uniterm |
-| Control command round trip | 1.35 ms | 3.53 ms | 2.18 ms | Uniterm |
-| Detached idle CPU (server and one shell) | 0.000 % core | 0.257 % core | 0.000 % core | tie (Uniterm, tmux) |
-| Detached idle memory (server and one shell) | 11.2 MiB | 24.1 MiB | 10.6 MiB | tmux |
-| Attached idle CPU (server, client, shell) | 0.000 % core | 0.427 % core | 0.003 % core | Uniterm |
-| Attached idle memory (server, client, shell) | 15.8 MiB | 38.4 MiB | 17.0 MiB | Uniterm |
-| Keystroke to visible | 2.08 ms | 8.31 ms | 2.09 ms | tie (Uniterm, tmux) |
-| 50,000-line output burst to visible | 392.5 ms | 372.7 ms | 391.0 ms | Herdr |
-| Bytes written to the outer terminal per burst | 55.5 KiB | 18.6 KiB | 2.24 MiB | Herdr |
-| Idle memory with 16 panes attached | 82.5 MiB | 108.3 MiB | 81.5 MiB | tmux |
-| Idle memory with 3 clients attached | 24.5 MiB | 65.5 MiB | 29.6 MiB | Uniterm |
-| Resize storm settle (40 resizes after output bursts) | 22.0 ms | 269.9 ms | 207.0 ms | Uniterm |
-| Binary size | 5.64 MiB | 23.40 MiB | 1.35 MiB | context only |
+| Metric | Uniterm dev | Herdr 0.9.5 | tmux 3.8 |
+| --- | ---: | ---: | ---: |
+| Startup ready | 4.576 ms | 22.402 ms | 6.329 ms |
+| Control command | 0.382 ms | 0.823 ms | 0.530 ms |
+| Detached idle CPU (one core) | 0.000% | 0.163% | 0.000% |
+| Detached cohort RSS | 14.56 MiB | 30.03 MiB | 9.02 MiB |
+| Attached idle CPU (one core) | 0.000% | 0.530% | 0.003% |
+| Attached cohort RSS | 22.39 MiB | 51.10 MiB | 13.21 MiB |
+| Input to visible output | 2.109 ms | 2.445 ms | 2.176 ms |
+| 50,000-line burst | 163.254 ms | 173.232 ms | 225.691 ms |
 
-Across the eight core metrics, Uniterm leads 4, tmux leads 1, Herdr leads 1, and 2 are Uniterm/tmux ties on these aggregated medians.
-On the balanced index, a geometric mean of ratios rather than a count of wins, Uniterm scored 98.7, tmux 85.8, and Herdr 36.1.
-Binary size and the extended scenarios are context, separate from the balanced index.
-Herdr's background network checks were disabled during timing; tmux ran with a private socket and configuration; feature breadth and assurance are not folded into performance.
-A zero CPU reading does not establish zero CPU use.
-These measurements apply to the named Linux host and workload, not every platform or workflow.
-
-[Full setup, results, and downloadable raw evidence](docs/BENCHMARKS.md).
-[Historical Uniterm v1.0.3 comparison](docs/BENCHMARKS-v1.0.3.md) and [historical Uniterm v1.0.0 comparison](docs/BENCHMARKS-v1.0.0.md), both against Herdr alone.
-The v1.0.0 binaries came from development commits after their release tags; none of the three campaigns is a controlled Uniterm-only version comparison.
+On this same host, startup changed from 54.359 to 4.576 ms and 50,000-line bursts from 207.643 to 163.254 ms compared with Uniterm 1.2.20.
+The 50,000-line burst used 5.8% less elapsed time than Herdr on this host.
+Render output measured 87.06 KiB versus 59.68 KiB before and 28.42 KiB for Herdr; tmux used less memory.
+Attached cohort RSS rose from 20.86 to 22.39 MiB; three-client RSS rose from 33.08 to 36.49 MiB.
+Input values near 2 ms reach the observer's polling floor; measured zero CPU does not prove zero work.
+[All 36 metrics, run ranges, source and binary hashes, reproduction, limitations and earlier results](docs/BENCHMARKS.md).
 
 ## Driving Uniterm from an AI agent
 
@@ -121,7 +107,6 @@ Point your harness's skill discovery at the `skills/` directory, or copy the fol
 
 - **Your data stays local.**
   Snapshots and event logs live under `~/.local/state/uniterm/` with owner-only permissions and are never sent anywhere; they can contain terminal output, so treat the directory as sensitive.
-  Uniterm has no telemetry and no update checks; its only network use is your own SSH connection for remote Workspaces and a loopback probe that confirms a detected development server is listening.
 - **Platforms.**
   Apple Silicon macOS, glibc Linux, WSL, and Android Termux are supported; Intel macOS and native Windows are not.
 - **Uniterm Desktop.**

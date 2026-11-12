@@ -571,9 +571,29 @@ impl Terminal {
         let Terminal {
             grid, parser, st, ..
         } = self;
-        let mut perf = Performer { grid, st };
-        for &b in bytes {
-            parser.advance(&mut perf, b);
+        let mut scalar = Performer { grid, st };
+        // Nothing is buffered across feeds. Keep tiny reads on the original
+        // sink, including continuation bytes for vte's pending UTF-8/escapes.
+        if bytes.len() <= 1 {
+            feed_bytes(parser, &mut scalar, bytes);
+            return;
+        }
+        let mut perf = BufferedPerformer::new(scalar);
+        // Probe only a bounded prefix through callbacks, never by interpreting
+        // raw bytes. Unproductive feeds use the original sink for the remainder.
+        let (probe, rest) = bytes.split_at(bytes.len().min(perf.bytes.len()));
+        feed_bytes(parser, &mut perf, probe);
+        // The same parser may retain an unfinished escape or UTF-8 sequence.
+        // Commit pending cells before either sink can receive its next callback.
+        perf.flush();
+        if rest.is_empty() {
+            return;
+        }
+        if perf.used_bulk {
+            feed_bytes(parser, &mut perf, rest);
+            perf.flush();
+        } else {
+            feed_bytes(parser, &mut perf.inner, rest);
         }
     }
 
@@ -596,10 +616,191 @@ impl Terminal {
     }
 }
 
+// Keep one small byte loop per sink type, separate from buffer setup and sink
+// selection. This lets vte inline its advance into the loop without duplicating
+// it at each feed call site or paying a parser call for every input byte.
+#[inline(never)]
+fn feed_bytes<P: Perform>(parser: &mut vte::Parser, performer: &mut P, bytes: &[u8]) {
+    for &byte in bytes {
+        parser.advance(performer, byte);
+    }
+}
+
 /// The `vte::Perform` sink: applies parsed actions to the grid + cursor.
 struct Performer<'a> {
     grid: &'a mut Grid,
     st: &'a mut EmuState,
+}
+
+/// Amortize ordinary row writes without interpreting bytes outside vte.
+/// All semantic callbacks flush first; the scalar sink remains the authority
+/// for graphemes, wide repairs, modes, REP and deferred wrapping.
+struct BufferedPerformer<'a> {
+    inner: Performer<'a>,
+    bytes: [u8; 128],
+    len: usize,
+    limit: usize,
+    first_print: bool,
+    // Sticky only within this feed, including bulk writes flushed by callbacks.
+    used_bulk: bool,
+}
+
+impl<'a> BufferedPerformer<'a> {
+    fn new(inner: Performer<'a>) -> Self {
+        Self {
+            inner,
+            bytes: [0; 128],
+            len: 0,
+            limit: 0,
+            first_print: true,
+            used_bulk: false,
+        }
+    }
+
+    // Inspect the actual preceding glyph: an ASCII character following Prepend
+    // may have extended a cluster instead of establishing an ordinary boundary.
+    fn can_batch(&self) -> bool {
+        let st = &self.inner.st;
+        if st.insert_mode
+            || st.dec_line_drawing
+            || st.wrap_pending
+            || st.cx == 0
+            || st.cx >= st.width
+            || st.cy >= st.height
+        {
+            return false;
+        }
+        let previous = self.inner.grid.get(st.cx - 1, st.cy);
+        previous.width == 1 && previous.cluster == 0 && (' '..='~').contains(&previous.ch)
+    }
+
+    fn flush(&mut self) {
+        let len = std::mem::take(&mut self.len);
+        if len == 1 {
+            // A lone tail cannot amortize the bulk writer's setup. Scalar
+            // printing also owns any wide repair at this last destination.
+            self.inner.print(char::from(self.bytes[0]));
+            return;
+        }
+        let mut offset = 0;
+        while offset < len {
+            if self.can_batch() {
+                let st = &mut self.inner.st;
+                let cell = Cell {
+                    fg: st.fg,
+                    bg: st.bg,
+                    attrs: st.attrs,
+                    underline_color: st.underline_color_handle,
+                    hyperlink: st.hyperlink,
+                    ..Cell::default()
+                };
+                let count =
+                    self.inner
+                        .grid
+                        .set_ascii_prefix(st.cx, st.cy, &self.bytes[offset..len], cell);
+                if count != 0 {
+                    self.used_bulk |= count >= 2;
+                    let end = st.cx + count as u16;
+                    if end >= st.width {
+                        st.cx = st.width - 1;
+                        st.wrap_pending = st.autowrap;
+                    } else {
+                        st.cx = end;
+                    }
+                    st.last_char = Some(char::from(self.bytes[offset + count - 1]));
+                    offset += count;
+                    continue;
+                }
+            }
+            // A wide overlap or complex predecessor needs the complete scalar
+            // operation, which also guarantees progress when no prefix fits.
+            self.inner.print(char::from(self.bytes[offset]));
+            offset += 1;
+        }
+    }
+
+    #[inline]
+    fn finish_run(&mut self) {
+        // Control-heavy output often has no pending cells. Do not enter the
+        // bulk flush routine merely to discover that its loop is empty.
+        if self.len != 0 {
+            self.flush();
+        }
+        self.first_print = true;
+    }
+
+    // Keep buffer bookkeeping out of the first-print dispatch so isolated
+    // prints do not inherit the continuation path's stack frame.
+    #[inline(never)]
+    fn print_continuation(&mut self, c: char, ascii: bool) {
+        if ascii && (self.len != 0 || self.can_batch()) {
+            if self.len == 0 {
+                self.limit =
+                    usize::from(self.inner.st.width - self.inner.st.cx).min(self.bytes.len());
+            }
+            self.bytes[self.len] = c as u8;
+            self.len += 1;
+            if self.len == self.limit {
+                self.flush();
+            }
+        } else {
+            self.flush();
+            self.first_print = !ascii;
+            self.inner.print(c);
+        }
+    }
+}
+
+impl Perform for BufferedPerformer<'_> {
+    #[inline(always)]
+    fn print(&mut self, c: char) {
+        let ascii = (' '..='~').contains(&c);
+        if self.first_print {
+            // SGR-per-cell and other isolated prints avoid enqueue/eligibility
+            // work. Subsequent ASCII still proves its actual glyph boundary.
+            self.first_print = !ascii;
+            self.inner.print(c);
+        } else {
+            self.print_continuation(c, ascii);
+        }
+    }
+
+    // Keep every vte 0.13 Perform callback here, including ignored DCS callbacks:
+    // future scalar handlers must never observe a partially committed row.
+    fn execute(&mut self, byte: u8) {
+        self.finish_run();
+        self.inner.execute(byte);
+    }
+
+    fn csi_dispatch(&mut self, params: &Params, inter: &[u8], ignore: bool, action: char) {
+        self.finish_run();
+        self.inner.csi_dispatch(params, inter, ignore, action);
+    }
+
+    fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {
+        self.finish_run();
+        self.inner.osc_dispatch(params, bell_terminated);
+    }
+
+    fn esc_dispatch(&mut self, inter: &[u8], ignore: bool, byte: u8) {
+        self.finish_run();
+        self.inner.esc_dispatch(inter, ignore, byte);
+    }
+
+    fn hook(&mut self, params: &Params, inter: &[u8], ignore: bool, action: char) {
+        self.finish_run();
+        self.inner.hook(params, inter, ignore, action);
+    }
+
+    fn put(&mut self, byte: u8) {
+        self.finish_run();
+        self.inner.put(byte);
+    }
+
+    fn unhook(&mut self) {
+        self.finish_run();
+        self.inner.unhook();
+    }
 }
 
 impl Performer<'_> {
@@ -739,6 +940,76 @@ impl Performer<'_> {
     }
 
     fn apply_sgr(&mut self, params: &Params) {
+        // Borrow complete parameter groups: color-heavy TUIs must not copy
+        // parameters per SGR, and both extended-colour forms must retain their grouping:
+        // semicolon (`38;5;n`, `38;2;r;g;b` - separate single-value groups,
+        // consumed by look-ahead) and colon subparams (`38:5:n`, `38:2::r:g:b`
+        // - one multi-value group). btop and Claude Code are truecolor-first;
+        // dropping 38;2 rendered them monochrome.
+        let mut groups = params.iter().peekable();
+        if groups.peek().is_none() {
+            self.reset_sgr();
+            return;
+        }
+        while let Some(group) = groups.next() {
+            let code = group.first().copied().unwrap_or(0);
+            match code {
+                0 => self.reset_sgr(),
+                1 => self.st.attrs.0 |= Attrs::BOLD.0,
+                2 => self.st.attrs.0 |= Attrs::DIM.0,
+                3 => self.st.attrs.0 |= Attrs::ITALIC.0,
+                4 => {
+                    let style = group
+                        .get(1)
+                        .copied()
+                        .map_or(Some(UnderlineStyle::Single), underline_style);
+                    if let Some(style) = style {
+                        self.st.attrs.set_underline_style(style);
+                    }
+                }
+                5 => self.st.attrs.0 |= Attrs::BLINK.0,
+                7 => self.st.attrs.0 |= Attrs::REVERSE.0,
+                8 => self.st.attrs.0 |= Attrs::INVISIBLE.0,
+                9 => self.st.attrs.0 |= Attrs::STRIKE.0,
+                22 => self.st.attrs.0 &= !(Attrs::BOLD.0 | Attrs::DIM.0),
+                23 => self.st.attrs.0 &= !Attrs::ITALIC.0,
+                24 => self.st.attrs.set_underline_style(UnderlineStyle::None),
+                25 => self.st.attrs.0 &= !Attrs::BLINK.0,
+                27 => self.st.attrs.0 &= !Attrs::REVERSE.0,
+                28 => self.st.attrs.0 &= !Attrs::INVISIBLE.0,
+                29 => self.st.attrs.0 &= !Attrs::STRIKE.0,
+                30..=37 => self.st.fg = Color::Idx((code - 30) as u8),
+                39 => self.st.fg = Color::DEFAULT,
+                40..=47 => self.st.bg = Color::Idx((code - 40) as u8),
+                49 => self.st.bg = Color::DEFAULT,
+                90..=97 => self.st.fg = Color::Idx((code - 90 + 8) as u8),
+                100..=107 => self.st.bg = Color::Idx((code - 100 + 8) as u8),
+                38 | 48 | 58 => {
+                    let color = parse_extended_color(group, &mut groups);
+                    if let Some(c) = color {
+                        if code == 38 {
+                            self.st.fg = c;
+                        } else if code == 48 {
+                            self.st.bg = c;
+                        } else {
+                            self.st.underline_color = c;
+                            self.st.underline_color_handle = self.grid.intern_underline_color(c);
+                        }
+                    }
+                }
+                59 => {
+                    self.st.underline_color = Color::DEFAULT;
+                    self.st.underline_color_handle = 0;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Pre-optimization semantics retained only as a differential test oracle.
+    // Add future SGR semantics to both implementations; keep their traversal independent.
+    #[cfg(test)]
+    fn apply_sgr_reference(&mut self, params: &Params) {
         // Keep every param group whole so both extended-colour forms parse:
         // semicolon (`38;5;n`, `38;2;r;g;b` - separate single-value groups,
         // consumed by look-ahead) and colon subparams (`38:5:n`, `38:2::r:g:b`
@@ -784,7 +1055,7 @@ impl Performer<'_> {
                 90..=97 => self.st.fg = Color::Idx((code - 90 + 8) as u8),
                 100..=107 => self.st.bg = Color::Idx((code - 100 + 8) as u8),
                 38 | 48 | 58 => {
-                    let (color, consumed) = parse_extended_color(&groups[i..]);
+                    let (color, consumed) = parse_extended_color_reference(&groups[i..]);
                     if let Some(c) = color {
                         if code == 38 {
                             self.st.fg = c;
@@ -1050,6 +1321,42 @@ fn underline_style(value: u16) -> Option<UnderlineStyle> {
     }
 }
 
+/// Consume only the borrowed groups belonging to an extended color.
+/// Unknown modes leave the following group for ordinary SGR processing;
+/// truncated recognized modes consume the same available fields as before.
+fn parse_extended_color<'a>(
+    head: &[u16],
+    groups: &mut std::iter::Peekable<impl Iterator<Item = &'a [u16]>>,
+) -> Option<Color> {
+    if head.len() > 1 {
+        return match head[1] {
+            5 if head.len() >= 3 => Some(Color::Idx(head[2] as u8)),
+            2 if head.len() >= 6 => Some(Color::Rgb(head[3] as u8, head[4] as u8, head[5] as u8)),
+            2 if head.len() >= 5 => Some(Color::Rgb(head[2] as u8, head[3] as u8, head[4] as u8)),
+            _ => None,
+        };
+    }
+    match groups.peek().and_then(|group| group.first()).copied() {
+        Some(5) => {
+            groups.next();
+            groups
+                .next()
+                .and_then(|group| group.first())
+                .copied()
+                .map(|n| Color::Idx(n as u8))
+        }
+        Some(2) => {
+            groups.next();
+            let mut next = || groups.next().and_then(|group| group.first()).copied();
+            match (next(), next(), next()) {
+                (Some(r), Some(g), Some(b)) => Some(Color::Rgb(r as u8, g as u8, b as u8)),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Parse an extended-colour SGR at `groups[0]` (38, 48, or 58).
 /// Returns the colour (if well-formed) and how many groups were consumed.
 ///
@@ -1057,7 +1364,8 @@ fn underline_style(value: u16) -> Option<UnderlineStyle> {
 /// - semicolon: `38;5;n` and `38;2;r;g;b` - each value its own group
 /// - colon:     `38:5:n`, `38:2:r:g:b`, and `38:2::r:g:b` (with a colourspace
 ///   id) - one group carrying subparams
-fn parse_extended_color(groups: &[Vec<u16>]) -> (Option<Color>, usize) {
+#[cfg(test)]
+fn parse_extended_color_reference(groups: &[Vec<u16>]) -> (Option<Color>, usize) {
     let head = &groups[0];
     if head.len() > 1 {
         // Colon form: everything is in this one group.
@@ -1382,7 +1690,15 @@ impl Perform for Performer<'_> {
                 let mut text = self.grid.cell_text_owned(old);
                 text.push(c);
                 let width = text.as_str().width().clamp(1, 2) as u8;
-                if width == 2 && x + 1 >= self.st.width {
+                if width == 2 && self.st.width == 1 {
+                    // A widening cluster cannot move to a two-column row here.
+                    // Keep its text in one modeled cell, like narrow reflow;
+                    // display extraction supplies the replacement glyph until
+                    // the pane grows. Never advance the cursor beyond the row.
+                    self.grid.set_grapheme(x, y, &text, old, 1);
+                    self.st.cx = 0;
+                    self.st.wrap_pending = self.st.autowrap;
+                } else if width == 2 && x + 1 >= self.st.width {
                     let blank = self.st.blank_cell();
                     self.grid.clear_glyph_at(x, y, blank);
                     if self.st.autowrap {
@@ -1413,15 +1729,21 @@ impl Perform for Performer<'_> {
             }
         }
 
-        let mut text = c.to_string();
+        // Keep ordinary scalars as scalars through the grid write. Only the
+        // dotted-circle fallback needs a multi-scalar UTF-8 representation.
+        let mut scalar = c;
+        let mut dotted = [0; 7];
         let mut width = c.width().unwrap_or(0).clamp(0, 2) as u8;
-        if width == 0 {
-            text.insert(0, '◌');
+        let dotted_text = if width == 0 {
+            let prefix = '◌'.encode_utf8(&mut dotted).len();
+            let len = prefix + c.encode_utf8(&mut dotted[prefix..]).len();
             width = 1;
-        }
+            Some(std::str::from_utf8(&dotted[..len]).expect("encoded dotted scalar"))
+        } else {
+            None
+        };
         if width == 2 && self.st.width == 1 {
-            text.clear();
-            text.push('�');
+            scalar = '�';
             width = 1;
         }
         if self.st.wrap_pending {
@@ -1438,8 +1760,7 @@ impl Perform for Performer<'_> {
                 self.st.cx = 0;
                 self.linefeed();
             } else {
-                text.clear();
-                text.push('�');
+                scalar = '�';
                 width = 1;
             }
         }
@@ -1457,8 +1778,13 @@ impl Perform for Performer<'_> {
             hyperlink: self.st.hyperlink,
             ..Cell::default()
         };
-        self.grid
-            .set_grapheme(self.st.cx, self.st.cy, &text, cell, width);
+        if let Some(text) = dotted_text {
+            self.grid
+                .set_grapheme(self.st.cx, self.st.cy, text, cell, width);
+        } else {
+            self.grid
+                .set_scalar(self.st.cx, self.st.cy, scalar, cell, width);
+        }
         let end = self.st.cx + width as u16;
         if end >= self.st.width {
             self.st.cx = self.st.width - 1;
@@ -2690,6 +3016,94 @@ mod tests {
     }
 
     #[test]
+    fn one_column_keycap_keeps_cursor_and_retains_grapheme() {
+        // Exercise the immediate scalar sink independently of ASCII buffering.
+        let feed = |terminal: &mut Terminal, bytes: &[u8]| {
+            let Terminal {
+                grid, parser, st, ..
+            } = terminal;
+            let mut performer = Performer { grid, st };
+            for &byte in bytes {
+                parser.advance(&mut performer, byte);
+            }
+        };
+        let keycap = "1\u{fe0f}\u{20e3}";
+        for split in 0..=keycap.len() {
+            let mut terminal = Terminal::new(1, 2);
+            feed(&mut terminal, &keycap.as_bytes()[..split]);
+            assert!(terminal.st.cx < terminal.st.width);
+            feed(&mut terminal, &keycap.as_bytes()[split..]);
+            assert_eq!(terminal.cursor(), (0, 0));
+            assert!(terminal.st.wrap_pending);
+            let cell = terminal.grid.get(0, 0);
+            assert_eq!(cell.width, 1);
+            assert_eq!(terminal.grid.cell_text_owned(cell), keycap);
+            let mut display = Vec::new();
+            terminal.grid.write_cell_display_text(cell, &mut display);
+            assert_eq!(display, "�".as_bytes());
+            feed(&mut terminal, b"X");
+            assert_eq!(terminal.cursor(), (0, 1));
+            assert_eq!(terminal.grid.get(0, 1).ch, 'X');
+            assert_eq!(
+                terminal.grid.cell_text_owned(terminal.grid.get(0, 0)),
+                keycap
+            );
+            terminal.resize(4, 2);
+            assert!(terminal.grid.export_lines(8).iter().any(|line| {
+                line.cells
+                    .iter()
+                    .any(|cell| cell.text == keycap && cell.width == 2)
+            }));
+        }
+    }
+
+    #[test]
+    fn scalar_printing_preserves_fallbacks_wrap_and_repeat() {
+        let mut t = Terminal::new(4, 3);
+        t.feed("\u{301}".as_bytes());
+        assert_eq!(t.grid().cell_text_owned(t.grid().get(0, 0)), "◌\u{301}");
+        t.feed(b"abc");
+        assert_eq!(t.cursor(), (3, 0));
+        t.feed("\u{301}Z\x1b[2b".as_bytes());
+        assert_eq!(t.grid().cell_text_owned(t.grid().get(3, 0)), "c\u{301}");
+        assert!(t.grid().line_wrapped(0));
+        assert_eq!(row_text(&t, 1), "ZZZ");
+
+        // Unicode Prepend can join the following ASCII scalar; it must reach
+        // segmentation even when the new scalar would otherwise be cheap.
+        let mut prepend = Terminal::new(8, 1);
+        prepend.feed("\u{600}A".as_bytes());
+        assert!(prepend
+            .grid()
+            .cell_text_owned(prepend.grid().get(0, 0))
+            .ends_with("\u{600}A"));
+
+        let mut narrow = Terminal::new(1, 2);
+        narrow.feed("界".as_bytes());
+        assert_eq!(row_text(&narrow, 0), "�");
+        assert_eq!(narrow.grid().get(0, 0).width, 1);
+
+        let mut no_wrap = Terminal::new(3, 1);
+        no_wrap.feed("\x1b[?7lab界".as_bytes());
+        assert_eq!(row_text(&no_wrap, 0), "ab�");
+        assert_eq!(no_wrap.cursor(), (2, 0));
+    }
+
+    #[test]
+    fn unchanged_narrow_text_does_not_damage_the_grid() {
+        let mut t = Terminal::new(20, 2);
+        let text = "\x1b[1;31mabc é\x1b[0m";
+        t.feed(text.as_bytes());
+        assert_eq!(t.grid().row_damage(0), Some((0, 4)));
+        t.grid_mut().clear_damage();
+        t.feed(b"\r");
+        t.feed(text.as_bytes());
+        assert!(!t.grid().is_dirty());
+        t.feed(b"");
+        assert!(!t.grid().is_dirty());
+    }
+
+    #[test]
     fn erasing_either_half_removes_a_wide_glyph() {
         let mut t = Terminal::new(8, 2);
         t.feed("A界B".as_bytes());
@@ -2778,6 +3192,609 @@ mod tests {
         assert!(t.cursor_visible());
         assert!(!t.bracketed_paste());
         assert_eq!(t.take_prompt_marks(), vec!["D;0", "A"]);
+    }
+
+    // Independent immediate sink, using the same pinned vte parser. This keeps
+    // the full scalar semantics as an oracle without a production feature flag.
+    fn feed_scalar(terminal: &mut Terminal, bytes: &[u8]) {
+        let Terminal {
+            grid, parser, st, ..
+        } = terminal;
+        let mut performer = Performer { grid, st };
+        for &byte in bytes {
+            parser.advance(&mut performer, byte);
+        }
+    }
+
+    fn assert_same_grid(actual: &Grid, expected: &Grid) {
+        assert_eq!(actual.width(), expected.width());
+        assert_eq!(actual.height(), expected.height());
+        assert_eq!(
+            actual.export_lines(usize::MAX),
+            expected.export_lines(usize::MAX)
+        );
+        assert_eq!(actual.retained_cell_count(), expected.retained_cell_count());
+        assert_eq!(actual.is_dirty(), expected.is_dirty());
+        assert_eq!(actual.pending_scroll_up(), expected.pending_scroll_up());
+        assert_eq!(actual.total_lines(), expected.total_lines());
+        assert_eq!(actual.first_line_id(), expected.first_line_id());
+        for line in 0..actual.total_lines() {
+            assert_eq!(actual.line_id(line), expected.line_id(line));
+            assert_eq!(actual.line_wrapped(line), expected.line_wrapped(line));
+            for x in 0..actual.width() {
+                let a = actual.line_cell(line, x);
+                let b = expected.line_cell(line, x);
+                assert_eq!(a, b);
+                assert_eq!(
+                    actual.hyperlink(a.hyperlink),
+                    expected.hyperlink(b.hyperlink)
+                );
+                assert_eq!(
+                    actual.underline_color(a.underline_color),
+                    expected.underline_color(b.underline_color)
+                );
+            }
+        }
+        for y in 0..actual.height() {
+            assert_eq!(actual.row_damage(y), expected.row_damage(y));
+        }
+    }
+
+    fn assert_same_terminal(actual: &Terminal, expected: &Terminal) {
+        assert_same_grid(&actual.grid, &expected.grid);
+        assert_eq!(actual.scrollback_limit, expected.scrollback_limit);
+        macro_rules! same_state {
+            ($($field:ident),+ $(,)?) => { $(
+                assert_eq!(actual.st.$field, expected.st.$field, stringify!($field));
+            )+ };
+        }
+        same_state!(
+            width,
+            height,
+            cx,
+            cy,
+            fg,
+            bg,
+            attrs,
+            underline_color,
+            underline_color_handle,
+            hyperlink,
+            wrap_pending,
+            autowrap,
+            origin_mode,
+            insert_mode,
+            cursor_visible,
+            bracketed_paste,
+            last_char,
+            tabs,
+            dec_line_drawing,
+            scroll_top,
+            scroll_bottom,
+            saved,
+            alt_cursor,
+            app_cursor,
+            mouse_mode,
+            mouse_sgr,
+            nested_input,
+            nested_input_changes,
+            agent_events,
+            cwd,
+            prompt_marks,
+            clipboard_requests,
+            terminal_title,
+            title_revision,
+            default_fg,
+            default_bg,
+            dark_theme,
+            palette_notifications,
+            scrollback_limit,
+            responses,
+        );
+        for (a, b) in actual.st.keyboard.iter().zip(&expected.st.keyboard) {
+            assert_eq!(a.flags, b.flags);
+            assert_eq!(a.stack, b.stack);
+            assert_eq!(a.depth, b.depth);
+        }
+        match (&actual.st.alt_backup, &expected.st.alt_backup) {
+            (Some(a), Some(b)) => assert_same_grid(a, b),
+            (None, None) => {}
+            _ => panic!("alternate-screen backup differs"),
+        }
+    }
+
+    fn compare_ascii_feeds(width: u16, chunks: &[&[u8]]) {
+        let mut actual = Terminal::new(width, 4);
+        let mut expected = Terminal::new(width, 4);
+        actual.set_scrollback_limit(5);
+        expected.set_scrollback_limit(5);
+        // Seed wide and clustered targets so replacement can hit either half.
+        let seed = "A界e\u{301}Z\r".as_bytes();
+        actual.feed(seed);
+        feed_scalar(&mut expected, seed);
+        for chunk in chunks {
+            actual.grid.clear_damage();
+            expected.grid.clear_damage();
+            feed_scalar(&mut expected, chunk);
+            actual.feed(chunk);
+            assert_same_terminal(&actual, &expected);
+        }
+        // Expose hidden last-char, cursor, pending-wrap and saved-mode errors.
+        let followup = b"\x1b[3b\x1b[6n\x1b[?1049l\x1b8X\r\nlast";
+        actual.feed(followup);
+        feed_scalar(&mut expected, followup);
+        assert_same_terminal(&actual, &expected);
+        actual.resize(width.saturating_add(3), 5);
+        expected.resize(width.saturating_add(3), 5);
+        assert_same_terminal(&actual, &expected);
+        for limit in [2, 0, 5] {
+            actual.set_scrollback_limit(limit);
+            expected.set_scrollback_limit(limit);
+            assert_same_terminal(&actual, &expected);
+        }
+    }
+
+    #[test]
+    fn borrowed_sgr_groups_match_owned_color_and_attribute_semantics() {
+        struct Sink<'a> {
+            terminal: &'a mut Terminal,
+            reference: bool,
+        }
+        impl Perform for Sink<'_> {
+            fn csi_dispatch(&mut self, params: &Params, inter: &[u8], _ignore: bool, action: char) {
+                // Match production: apply the truncated parameters on parser overflow.
+                if !inter.is_empty() || action != 'm' {
+                    return;
+                }
+                let mut sink = Performer {
+                    grid: &mut self.terminal.grid,
+                    st: &mut self.terminal.st,
+                };
+                if self.reference {
+                    sink.apply_sgr_reference(params);
+                } else {
+                    sink.apply_sgr(params);
+                }
+            }
+            fn print(&mut self, c: char) {
+                Performer {
+                    grid: &mut self.terminal.grid,
+                    st: &mut self.terminal.st,
+                }
+                .print(c);
+            }
+        }
+        fn run(bytes: &[u8], reference: bool) -> Terminal {
+            let mut terminal = Terminal::new(80, 4);
+            let mut parser = Parser::new();
+            let mut sink = Sink {
+                terminal: &mut terminal,
+                reference,
+            };
+            for &byte in bytes {
+                parser.advance(&mut sink, byte);
+            }
+            terminal
+        }
+        let mut parameters: Vec<String> = [
+            "",
+            "0",
+            ";",
+            "1;2;3;4;5;7;8;9",
+            "22;23;24;25;27;28;29",
+            "30;39;40;49;90;107",
+            "4:0;4:1;4:2;4:3;4:4;4:5;4:99",
+            "38",
+            "38;5",
+            "38;5;255;1",
+            "38;5;65535;22",
+            "38;31;1",
+            "38;2",
+            "38;2;255",
+            "38;2;255;1",
+            "38;2;255;1;2;31",
+            "38:5:240;48:5:1;58:5:7",
+            "38:2:1:2:3;48:2::4:5:6;58:2:0:7:8:9",
+            "38:2;48:2::;58:2:1:2",
+            "38;2:9;1:2;3:4;5:6;7",
+            "38:5;240",
+            "38:2;1;2;3",
+            "38;5:240;1",
+            "38;2;1;2:7;3",
+            "48;5",
+            "58;2;1;2",
+            "58;5;4;59",
+            "?1;38;5;4",
+            ">1;4",
+            "1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        // Cut a truecolor sequence at, and beyond, vte's 32-value bound.
+        for prefix in [29, 30, 31] {
+            parameters.push(format!("{}38;2;9;8;7", "1;".repeat(prefix)));
+        }
+        let tokens = [
+            "",
+            "0",
+            "1",
+            "22",
+            "38",
+            "48",
+            "58",
+            "2",
+            "5",
+            "255",
+            "256",
+            "65535",
+            "4:0",
+            "4:3",
+            "38:5:240",
+            "38:2::1:2:3",
+            "38:2:7:8:9",
+            "38:99",
+            "999",
+            "58:2:1:2",
+        ];
+        let mut state = 0x8d26_53a1_u32;
+        for count in 0..512 {
+            let mut parts = Vec::new();
+            for _ in 0..(count % 12 + 1) {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                parts.push(tokens[state as usize % tokens.len()]);
+            }
+            parameters.push(parts.join(";"));
+        }
+        for parameter in parameters {
+            let bytes =
+                format!("\x1b[1;3;38;5;2;48;5;4;4:3;58:5:7mA\x1b[{parameter}mB\x1b[38;5;9;4:5mC");
+            let actual = run(bytes.as_bytes(), false);
+            let expected = run(bytes.as_bytes(), true);
+            assert_eq!(
+                (
+                    actual.st.fg,
+                    actual.st.bg,
+                    actual.st.attrs,
+                    actual.st.underline_color
+                ),
+                (
+                    expected.st.fg,
+                    expected.st.bg,
+                    expected.st.attrs,
+                    expected.st.underline_color
+                ),
+                "SGR {parameter:?}"
+            );
+            assert_same_terminal(&actual, &expected);
+        }
+        let mut actual = run(b"\x1b[1;31;4:3;58;5;7mX", false);
+        let mut expected = run(b"\x1b[1;31;4:3;58;5;7mX", true);
+        Performer {
+            grid: &mut actual.grid,
+            st: &mut actual.st,
+        }
+        .apply_sgr(&Params::default());
+        Performer {
+            grid: &mut expected.grid,
+            st: &mut expected.st,
+        }
+        .apply_sgr_reference(&Params::default());
+        assert_same_terminal(&actual, &expected);
+    }
+
+    #[test]
+    fn feed_probe_records_only_successful_multicell_writes() {
+        for (stream, wide, insert, width, productive) in [
+            (&b"AB"[..], false, false, 160, false),
+            (&b"ABC"[..], false, false, 160, true),
+            (&b"ABC\r\x1b[6n"[..], false, false, 160, true),
+            (&b"ABC"[..], true, false, 160, false),
+            (&b"ABCDE"[..], true, false, 160, true),
+            (&b"ABCDE"[..], false, true, 160, false),
+            (&b"ABCDE"[..], false, false, 1, false),
+            ("界e\u{301}".as_bytes(), false, false, 160, false),
+        ] {
+            let mut actual = Terminal::new(width, 3);
+            let mut expected = Terminal::new(width, 3);
+            for terminal in [&mut actual, &mut expected] {
+                if wide {
+                    terminal.grid.set_grapheme(2, 0, "界", Cell::default(), 2);
+                }
+                terminal.st.insert_mode = insert;
+            }
+            {
+                let mut perf = BufferedPerformer::new(Performer {
+                    grid: &mut actual.grid,
+                    st: &mut actual.st,
+                });
+                for &byte in stream {
+                    actual.parser.advance(&mut perf, byte);
+                }
+                perf.flush();
+                assert_eq!(perf.used_bulk, productive, "{stream:?}");
+                assert_eq!(perf.len, 0);
+            }
+            feed_scalar(&mut expected, stream);
+            assert_same_terminal(&actual, &expected);
+        }
+        // Already identical cells still amortize comparison; real damage is not
+        // required to make a bulk operation useful. A fresh sink forgets it.
+        let mut terminal = Terminal::new(160, 3);
+        terminal.feed(b"ABC\r");
+        terminal.grid.clear_damage();
+        let mut perf = BufferedPerformer::new(Performer {
+            grid: &mut terminal.grid,
+            st: &mut terminal.st,
+        });
+        assert!(!perf.used_bulk);
+        for c in "ABC".chars() {
+            perf.print(c);
+        }
+        perf.flush();
+        assert!(perf.used_bulk);
+        assert!(!perf.inner.grid.is_dirty());
+    }
+
+    #[test]
+    fn feed_probe_transitions_match_scalar_across_external_chunks() {
+        let controls = b"\x1b[2;3HX\rY".repeat(48);
+        let text = b"ordinary printable run through wrap and history\r\n".repeat(12);
+        let modes: &[&[u8]] = &[b"", b"\x1b[4h", b"\x1b(0", b"\x1b[?7l", b"\x1b[?1049h"];
+        for &mode in modes {
+            for productive_first in [false, true] {
+                let mut stream = mode.to_vec();
+                for part in if productive_first {
+                    [&text, &controls, &text]
+                } else {
+                    [&controls, &text, &controls]
+                } {
+                    stream.extend_from_slice(part);
+                }
+                stream.extend_from_slice(b"\x1b[4l\x1b(B\x1b[?7h\x1b[?1049l\x1b[3b\x1b[6n");
+                for width in [1, 2, 7, 160] {
+                    compare_ascii_feeds(width, &[&stream, b""]);
+                    for size in [1, 2, 8, 16, 32, 64, 127, 128, 129, 256, 4096] {
+                        let mut chunks = Vec::new();
+                        for chunk in stream.chunks(size) {
+                            chunks.push(chunk);
+                            chunks.push(&b""[..]);
+                        }
+                        compare_ascii_feeds(width, &chunks);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn feed_probe_internal_boundary_preserves_pending_parser_state() {
+        let sequences: &[&[u8]] = &[
+            "界e\u{301}1\u{fe0f}\u{20e3}".as_bytes(),
+            b"\x1b[38;2;4;5;6mZ\x1b[6n",
+            b"\x1b]2;boundary title\x1b\\",
+            b"\x1b]8;;https://example.test\x07Z\x1b]8;;\x07",
+            b"\x1bP1;2qignored\x1b\\",
+            b"\xe2\x82\x1b[2J",
+        ];
+        for &sequence in sequences {
+            for split in 1..sequence.len() {
+                for productive in [false, true] {
+                    // Put the internal 128-byte cut at every position within
+                    // each sequence, after either useful writes or controls.
+                    let mut stream = vec![if productive { b'A' } else { b'\r' }; 128 - split];
+                    stream.extend_from_slice(sequence);
+                    stream.extend_from_slice(b"ASCII after boundary\r\n");
+                    stream.extend_from_slice("界e\u{301}\x1b[2b\x1b[6n".as_bytes());
+                    for width in [2, 7, 160] {
+                        compare_ascii_feeds(width, &[&stream]);
+                        for external in [1, 127, 128, 129] {
+                            compare_ascii_feeds(
+                                width,
+                                &[&stream[..external], b"", &stream[external..]],
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn buffered_ascii_flushes_before_every_semantic_callback() {
+        fn callback(performer: &mut impl Perform, case: u8) {
+            match case {
+                0 => performer.execute(b'\r'),
+                1 => performer.csi_dispatch(&Params::default(), b"", false, 'c'),
+                2 => performer.osc_dispatch(&[b"2", b"title"], true),
+                3 => performer.esc_dispatch(b"", false, b'7'),
+                4 => performer.hook(&Params::default(), b"", false, 'q'),
+                5 => performer.put(b'x'),
+                6 => performer.unhook(),
+                _ => performer.print('\u{301}'),
+            }
+        }
+        for case in 0..8 {
+            let mut actual = Terminal::new(12, 2);
+            let mut expected = Terminal::new(12, 2);
+            {
+                let mut buffered = BufferedPerformer::new(Performer {
+                    grid: &mut actual.grid,
+                    st: &mut actual.st,
+                });
+                buffered.print('A');
+                buffered.print('B');
+                assert_eq!(buffered.len, 1);
+                callback(&mut buffered, case);
+                assert_eq!(buffered.len, 0);
+                buffered.print('D');
+                let mut scalar = Performer {
+                    grid: &mut expected.grid,
+                    st: &mut expected.st,
+                };
+                scalar.print('A');
+                scalar.print('B');
+                callback(&mut scalar, case);
+                scalar.print('D');
+            }
+            assert_same_terminal(&actual, &expected);
+        }
+    }
+
+    #[test]
+    fn buffered_ascii_matches_scalar_across_callbacks_and_chunks() {
+        let streams: &[&[u8]] = &[
+            b"ABC\r\nDEF\tGH\x08I\x00\x07\x18\x1aJK\x7f\xff",
+            b"AB\x1b7CD\x1b[6n\x1b[2b\x1b8EF\x1b[2K\x1b[2;3HGH\x1b[1P\x1b[2@IJ",
+            b"AB\x1b[1;3;4;38;2;1;2;3;48;5;9;58;5;4mCDE\x1b[0mFG",
+            b"AB\x1b[4hCDE\x1b[4lFG\x1b[?7lHIJKLMNOP\x1b[?7hQR",
+            b"AB\x1b(0lqk\x1b(BEF\x1b[2;3r\x1b[?6h\x1b[1;1HX\r\nYZ\r\nlast\x1b[?6l",
+            b"AB\x1b[?1049hCD\x1b[?25;2004;1003;1006;1hEF\x1b[?1049lGH\x1bcIJ",
+            b"AB\x1b[>1uCD\x1b[<uEF\x1b[?2031hGH\x1b[?2031l",
+            b"AB\x1bP1;2qignored\x1b\\CD\x1bPqstop\x18EF\x1b_ignored\x1b\\GH",
+            b"AB\x1b]8;;https://example.test\x1b\\CDE\x1b]8;;\x07FG",
+            b"AB\x1b]7;file://host/tmp\x07CD\x1b]133;A\x07EF\x1b]52;c;SGk=\x1b\\GH",
+            b"AB\x1b]2;title\x07CD\x1b[?1049hEF\x1b]777;notify;uniterm://cli-agent;{\"agent\":\"codex\",\"event\":\"session_end\"}\x07GH",
+            "\u{600}ABe\u{301}CD1\u{fe0f}\u{20e3}EF👩\u{200d}💻GH界IJ".as_bytes(),
+            b"AB\xc2\xa2C\xe2\x82\xacDE\xe4\xbf\x99\xb5F\xc2\x85G\xe2\x1b[2JHI",
+        ];
+        for &stream in streams {
+            for width in [1, 2, 7, 160] {
+                compare_ascii_feeds(width, &[stream]);
+                for split in 0..=stream.len() {
+                    compare_ascii_feeds(width, &[&stream[..split], b"", &stream[split..]]);
+                }
+                let bytewise: Vec<&[u8]> = stream.chunks(1).collect();
+                compare_ascii_feeds(width, &bytewise);
+                let small_chunks: Vec<&[u8]> = stream.chunks(3).collect();
+                compare_ascii_feeds(width, &small_chunks);
+            }
+        }
+    }
+
+    #[test]
+    fn buffered_ascii_mixed_tiny_feeds_preserve_parser_state() {
+        let streams: &[&[u8]] = &[
+            b"AB\x1b[31mC\x1b[32mD\x1b[0mEF\x1b[6n\x1b[2b",
+            "AB¢C€DE1\u{fe0f}\u{20e3}FG\u{600}HI".as_bytes(),
+            b"AB\x1b]8;;https://example.test\x1b\\CD\x1b]8;;\x07EF\x1bPqignored\x1b\\GH",
+            b"AB\xe4\xbf\x99\xb5C\xe2\x1b[2JDE\xc2\x85F\xffGH",
+        ];
+        let sizes = [1, 0, 2, 1, 3, 0];
+        for &stream in streams {
+            for rotation in 0..sizes.len() {
+                let mut chunks = Vec::new();
+                let mut at = 0;
+                let mut step = rotation;
+                while at < stream.len() {
+                    let end = (at + sizes[step % sizes.len()]).min(stream.len());
+                    chunks.push(&stream[at..end]);
+                    at = end;
+                    step += 1;
+                }
+                chunks.push(b"");
+                for width in [1, 2, 7, 160] {
+                    compare_ascii_feeds(width, &chunks);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn buffered_ascii_prefix_then_wide_repair_matches_scalar() {
+        for column in [3, 6] {
+            for autowrap in [false, true] {
+                for insert in [false, true] {
+                    let mut actual = Terminal::new(8, 3);
+                    let mut expected = Terminal::new(8, 3);
+                    for terminal in [&mut actual, &mut expected] {
+                        let styled = Cell {
+                            bg: Color::Idx(4),
+                            hyperlink: terminal.grid.intern_hyperlink("https://example.test/wide"),
+                            ..Cell::default()
+                        };
+                        terminal.grid.set_grapheme(column, 0, "界", styled, 2);
+                        terminal.grid.set_grapheme(
+                            if column == 3 { 5 } else { 3 },
+                            0,
+                            "e\u{301}",
+                            styled,
+                            1,
+                        );
+                        terminal.st.autowrap = autowrap;
+                        terminal.st.insert_mode = insert;
+                    }
+                    for chunk in [
+                        &b"abcdefghij"[..],
+                        &b"\x1b[4hKL\x1b[4lMN"[..],
+                        &b"\rABC\x1b[6n\x1b[2b"[..],
+                    ] {
+                        actual.grid.clear_damage();
+                        expected.grid.clear_damage();
+                        feed_scalar(&mut expected, chunk);
+                        actual.feed(chunk);
+                        assert_same_terminal(&actual, &expected);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn buffered_ascii_guard_rejects_out_of_bounds_cursor() {
+        for (cx, cy) in [(8, 0), (u16::MAX, 0), (1, 3), (1, u16::MAX)] {
+            let mut terminal = Terminal::new(8, 3);
+            terminal.st.cx = cx;
+            terminal.st.cy = cy;
+            let buffered = BufferedPerformer::new(Performer {
+                grid: &mut terminal.grid,
+                st: &mut terminal.st,
+            });
+            assert!(!buffered.can_batch());
+        }
+    }
+
+    #[test]
+    fn buffered_ascii_matches_scalar_at_capacity_wrap_and_history_edges() {
+        for length in [0, 1, 127, 128, 129, 159, 160, 161, 513] {
+            let bytes: Vec<u8> = (0..length).map(|index| b' ' + (index % 95) as u8).collect();
+            for width in [1, 2, 7, 128, 160] {
+                compare_ascii_feeds(width, &[&bytes, b"\x1b[6n"]);
+                let mut lines = Vec::new();
+                for _ in 0..12 {
+                    lines.extend_from_slice(&bytes);
+                    lines.extend_from_slice(b"\r\n");
+                }
+                compare_ascii_feeds(width, &[&lines]);
+            }
+        }
+        for &bytes in &[&b"ABCDEF"[..], "\u{600}AB".as_bytes(), b"AB\xcc\x81C"] {
+            for mask in 0..(1usize << bytes.len().saturating_sub(1)) {
+                let mut chunks = Vec::new();
+                let mut start = 0;
+                for end in 1..=bytes.len() {
+                    if end == bytes.len() || mask & (1 << (end - 1)) != 0 {
+                        chunks.push(&bytes[start..end]);
+                        start = end;
+                    }
+                }
+                compare_ascii_feeds(7, &chunks);
+            }
+        }
+    }
+
+    #[test]
+    fn buffered_ascii_noop_and_changed_endpoints_keep_precise_damage() {
+        let mut terminal = Terminal::new(12, 2);
+        terminal.feed(b"abcdefghij");
+        terminal.grid.clear_damage();
+        terminal.feed(b"\rabcdefghij");
+        assert!(!terminal.grid.is_dirty());
+        terminal.feed(b"\rabXdefgYij");
+        assert_eq!(terminal.grid.row_damage(0), Some((2, 7)));
+        assert_eq!(terminal.grid.row_damage(1), None);
+        terminal.grid.clear_damage();
+        terminal.feed(b"");
+        assert!(!terminal.grid.is_dirty());
     }
 
     #[test]

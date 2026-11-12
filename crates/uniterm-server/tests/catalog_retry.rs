@@ -41,8 +41,26 @@ fn runtime_barrier(client: &mut UnixStream) {
 }
 
 fn connect(socket: &Path) -> UnixStream {
-    common::wait_for_socket(socket);
-    let client = UnixStream::connect(socket).unwrap();
+    // A clean stop can leave the old socket pathname until the replacement
+    // listener binds. Wait for an accepting socket, not just that pathname.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let client = loop {
+        match UnixStream::connect(socket) {
+            Ok(client) => break client,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                ) && Instant::now() < deadline =>
+            {
+                thread::sleep(Duration::from_millis(10))
+            }
+            Err(error) => panic!(
+                "server did not accept a connection at {}: {error}",
+                socket.display()
+            ),
+        }
+    };
     client
         .set_read_timeout(Some(Duration::from_millis(100)))
         .unwrap();

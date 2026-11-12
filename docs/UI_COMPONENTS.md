@@ -120,6 +120,7 @@ Choose the existing `Kind::Choice`, toggle, text or number behavior before desig
 Reuse the shared Settings save path and update other attachments through existing messages.
 For a label-only change, repaint affected chrome without resizing terminal content.
 An unchanged value must not trigger new visible work.
+Auto-trust Project directories uses the shared explicit on/off hit regions (`approval_choice`) at its standard Settings control row; clicking the selected value is a no-op.
 Keep incompatible wire changes and existing enum discriminants consistent with [AGENTS.md](../AGENTS.md).
 
 ## Text, geometry and meaning

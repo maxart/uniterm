@@ -118,6 +118,29 @@ fn approval_persistence_requires_opt_in_and_preserves_on_off_through_restart_cra
     let mut server = start(&workspace);
     assert_eq!(mode(&socket, None), (false, false));
     assert!(!settings(&socket, None).persist_auto_approve);
+    assert!(settings(&socket, None).auto_trust_projects);
+    let patch = SettingsPatch {
+        auto_trust_projects: Some(false),
+        ..Default::default()
+    };
+    assert!(!settings(&socket, Some(patch.clone())).auto_trust_projects);
+    assert!(!settings(&socket, Some(patch)).auto_trust_projects);
+    assert_eq!(mode(&socket, None), (false, false));
+    assert!(!settings(&socket, None).auto_trust_projects);
+    stop(&mut server);
+    server = start(&workspace);
+    assert!(!settings(&socket, None).auto_trust_projects);
+    assert!(
+        settings(
+            &socket,
+            Some(SettingsPatch {
+                auto_trust_projects: Some(true),
+                ..Default::default()
+            })
+        )
+        .auto_trust_projects
+    );
+
     assert_eq!(mode(&socket, Some(true)), (true, false));
     stop(&mut server);
     server = start(&workspace);

@@ -50,6 +50,12 @@ impl Server {
         if !pane_input_has_capacity(pending, bytes.len()) {
             return false;
         }
+        if !bytes.is_empty() {
+            // Echo or an application's response to input must not wait behind
+            // the cadence of an earlier output burst. Keep an existing tail
+            // deadline in case the application produces no response at all.
+            pane.output_render.prioritize_input();
+        }
         if pane.input_offset != 0 {
             pane.input.drain(..pane.input_offset);
             pane.input_offset = 0;
@@ -181,6 +187,7 @@ impl Server {
             .then(|| self.automatic_pane_name(pane_id));
         let mut buf = [0u8; 65536];
         let mut got_output = false;
+        let mut scrolled = false;
         let mut cwd_changed = false;
         let mut graph_title_changed = false;
         let mut eof = false;
@@ -201,6 +208,10 @@ impl Server {
         let mut dev_server_evidence: Option<String> = None;
         let mut discover_servers = None;
         if let Some(pane) = self.panes.get_mut(&pane_id) {
+            // The pending scroll count saturates at the viewport height.
+            // Track the top line's identity to recognize new scrolling while
+            // older damage is deferred, and let unrelated edits paint now.
+            let scroll_origin = pane.term.grid().line_id(pane.term.grid().scrollback_len());
             let previous_title_revision = pane.term.title_revision();
             if writable {
                 Self::flush_pane_input(reg, pane);
@@ -236,6 +247,8 @@ impl Server {
                     }
                 }
             }
+            scrolled = pane.term.grid().pending_scroll_up() != 0
+                && scroll_origin != pane.term.grid().line_id(pane.term.grid().scrollback_len());
             // Answer any terminal queries the child emitted (DA/DSR/colour) by
             // writing the replies back to its PTY - otherwise querying shells
             // block until they time out.
@@ -741,9 +754,9 @@ impl Server {
             // batch. Paint those bytes before removing the pane, otherwise an
             // application's exit-time erase/restore sequences are lost and its
             // last UI remains stranded on attached clients.
-            if got_output {
-                self.broadcast_pane_damage(reg, pane_id);
-            }
+            // EOF can follow a previously deferred batch without returning
+            // any new bytes. Its tail must still precede pane removal.
+            self.broadcast_pane_damage(reg, pane_id);
             self.stash_final_frames();
             self.close_pane(reg, pane_id);
         } else {
@@ -756,7 +769,7 @@ impl Server {
             // unchanged, so the rails and status bar update without a screen
             // clear instead of blanking the whole frame.
             if got_output {
-                self.broadcast_pane_damage(reg, pane_id);
+                self.schedule_pane_damage(reg, pane_id, scrolled, std::time::Instant::now());
             }
             if agent_changed
                 || (self.config.auto_tab_names

@@ -35,12 +35,30 @@ No process-wide resource limit is changed by this patch or its concurrent tests.
 The fallback's cost is proportional to the captured bound, so native macOS launch measurements remain part of qualification; Linux/Android only incur that range cost when both the kernel range operation and child procfs enumeration are unavailable.
 Never replace this patch with blanket `closefrom(3)`: that would again destroy the exec-error pipe.
 
+## Linux PTY allocation
+
+glibc and musl `openpty` create both descriptors without `O_CLOEXEC`, and upstream marks them only afterwards.
+A child that another thread forks and execs in that window, through an ordinary `std::process::Command`, keeps the slave for its whole life.
+The master then never reports EOF after the pane's own process exits.
+On Linux, `src/unix_openpty.rs` therefore allocates the pair itself, following modern glibc `openpty`, with `O_CLOEXEC` on every descriptor it creates.
+The steps are `posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC)`, `grantpt` and `unlockpt`.
+The slave comes from `TIOCGPTPEER` with the same flags; like glibc, any failure falls back to `ptsname_r` and `open` of the devpts path, for kernels before 4.13.
+The initial window size is applied with `TIOCSWINSZ`, whose result glibc and musl also ignore; no termios is applied, as before.
+Owned descriptors close the master and slave on every error path, and the error message keeps upstream's `failed to openpty` form.
+Linux sets `FD_CLOEXEC` atomically at allocation; the existing idempotent post-construction `cloexec` check is retained unchanged.
+Android keeps Uniterm's Bionic `openpty` shim and macOS keeps libc `openpty`, both unchanged.
+A descriptor marked close-on-exec can still be held briefly by a concurrently forked child until that child execs; only lifetime retention is removed.
+
 Uniterm regressions live in `crates/uniterm-server/src/pty.rs`:
 
 - `executable_with_missing_shebang_interpreter_reports_spawn_error` checks a real executable whose interpreter cannot be executed, and safely reaps an unexpected successful spawn.
 - `inherited_descriptor_is_closed_in_child_without_changing_parent` checks a deliberately inheritable descriptor and unchanged parent flags.
 - `descriptor_opened_after_capture_is_marked_close_on_exec`, `fallback_covers_descriptors_opened_after_capture`, and `range_covers_descriptors_opened_after_capture` open a descriptor in the child after parent capture and verify the kernel, raw directory, and final range paths.
 - `fallback_preserves_the_exec_error_pipe` checks errno propagation after the forced fallback; `getdents_records_reject_malformed_lengths_names_and_overflow` checks the raw directory parser.
+- `linux_pty_pair_is_close_on_exec_from_allocation` checks `FD_CLOEXEC` on the master, the `TIOCGPTPEER` slave and the devpts fallback slave with no later `fcntl` pass, plus peer identity and the applied size.
+- `linux_pty_allocation_failure_releases_the_master` fails the slave step after the master exists and requires the master to be closed, observed as hangup on a separately opened slave.
+- `pty_slaves_are_not_retained_by_concurrently_spawned_children` allocates PTYs continuously while ordinary children list the descriptors they kept across exec, and requires none of the allocated slaves.
+  Spawning starts only after the first allocation, and a drop guard stops the allocator on every exit, including a panic.
 - Existing PTY tests cover controlling-terminal behavior, foreground process groups, resizing, and termination/reaping.
 - `pty_spawn_latency_measurement` is an explicit ignored measurement: run serially with `--ignored --nocapture --test-threads=1` to measure 200 launches at each of 0 and 64 additional descriptors without changing process-wide limits.
 On Linux/Android it additionally measures 200 forced fallback child launches, even on a new kernel.

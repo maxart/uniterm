@@ -5,7 +5,18 @@ use std::process::{Command, Output, Stdio};
 
 mod common;
 
+fn prepare_root(root: &Path) {
+    std::fs::create_dir_all(root.join("runtime")).unwrap();
+    std::fs::create_dir_all(root.join("config/uniterm")).unwrap();
+    std::fs::write(
+        root.join("config/uniterm/uniterm.conf"),
+        "auto-update-connectors = false\nauto-install-connectors = false\n",
+    )
+    .unwrap();
+}
+
 fn invoke(binary: &str, args: &[&str], state: &Path, root: &Path) -> Output {
+    prepare_root(root);
     Command::new(binary)
         .args(args)
         .env("XDG_STATE_HOME", state)
@@ -20,6 +31,7 @@ fn invoke(binary: &str, args: &[&str], state: &Path, root: &Path) -> Output {
 fn attach_refuses_the_workspace_that_owns_the_calling_pane() {
     let state = common::isolate_state();
     let root = common::temp_dir("attach-own");
+    prepare_root(&root);
     let name = common::unique_workspace_name();
     let dir = root.join("runtime").join("uniterm");
     std::fs::create_dir_all(&dir).unwrap();

@@ -10,7 +10,10 @@ function load(name, enabled = true) {
   let disposed = false, failWrite = false
   const raw = name === 'pi'
     ? readFileSync(new URL('../crates/uniterm-server/src/connectors.rs', import.meta.url), 'utf8').match(/const EXTENSION: &str = r#"([\s\S]*?)"#;/)[1]
-    : readFileSync(new URL(`../crates/uniterm-server/src/connectors/${name}.js`, import.meta.url), 'utf8')
+    : name === 'opencode-server'
+      ? JSON.parse(readFileSync(new URL('../crates/uniterm-server/src/connectors/opencode.rs', import.meta.url), 'utf8')
+        .match(/const SERVER: &str = ("(?:\\.|[^"\\])*");/)[1])
+      : readFileSync(new URL(`../crates/uniterm-server/src/connectors/${name}.js`, import.meta.url), 'utf8')
   const source = raw
     .replace('event: string, context?: any, task: any = {}', 'event, context, task = {}')
     .replace('pi: ExtensionAPI', 'pi')
@@ -60,6 +63,24 @@ test('OpenCode 1 retries stay busy, unknown statuses are silent, and children re
   assert.deepEqual([...h.listeners.keys()], ['exit'])
   await hooks.dispose()
   assert.equal(h.listeners.size, 0)
+})
+
+// Resolution of the installed tree is checked separately with official Bun
+// executables and real OpenCode startup. These assertions cover entrypoint
+// behavior only; they deliberately do not simulate a versioned module loader.
+test('legacy initialization emits once and the configured modern server stays inert', async () => {
+  const legacy = load('opencode-v1')
+  assert.equal(typeof legacy.plugin, 'function')
+  const hooks = await legacy.plugin()
+  assert.equal(legacy.frames.filter(frame => frame.event === 'session_start').length, 1)
+  await hooks.dispose()
+  const server = load('opencode-server')
+  assert.equal(typeof server.plugin, 'object')
+  assert.equal(server.plugin.id, 'uniterm.notify.v1')
+  assert.equal(typeof server.plugin.setup, 'function')
+  server.plugin.setup({})
+  assert.equal(server.frames.length, 0)
+  assert.equal(server.listeners.size, 0)
 })
 
 test('OpenCode 2 uses local selected-family state, recovers initial waits, and emits no unchanged bytes', () => {

@@ -333,6 +333,8 @@ pub(super) const APPROVAL_DIALOGS: &[super::approval::Dialog] = &[super::approva
         "yes, i trust this folder",
     ],
     deny: &["back to agent command center", "quit", "no, quit"],
+    alternatives: &[],
+    kind: super::approval::ApprovalKind::WorkspaceTrust,
 }];
 
 /// Codex carries the current task before an optional directory suffix.

@@ -50,6 +50,7 @@ enum Field {
     Overwatch,
     AutoApproval,
     PersistAutoApprove,
+    AutoTrustProjects,
     AutoUpdateConnectors,
     AutoInstallConnectors,
     AutoTabNames,
@@ -101,6 +102,7 @@ const FIELDS: &[Field] = &[
     Field::Overwatch,
     Field::AutoApproval,
     Field::PersistAutoApprove,
+    Field::AutoTrustProjects,
     Field::AutoUpdateConnectors,
     Field::AutoInstallConnectors,
     Field::AutoTrackTasks,
@@ -156,6 +158,7 @@ const SECTIONS: &[Section] = &[
             Field::Overwatch,
             Field::AutoApproval,
             Field::PersistAutoApprove,
+            Field::AutoTrustProjects,
             Field::AutoUpdateConnectors,
             Field::AutoInstallConnectors,
         ],
@@ -365,6 +368,7 @@ impl SettingsView {
             Field::AgentConnectors => "Connectors",
             Field::Overwatch => "Overwatch",
             Field::AutoApproval => "Auto-approve",
+            Field::AutoTrustProjects => "Auto-trust Project directories",
             Field::PersistAutoApprove => "Keep auto-approve on restart",
             Field::AutoUpdateConnectors => "Auto-update connectors",
             Field::AutoInstallConnectors => "Auto-install connectors",
@@ -421,6 +425,7 @@ impl SettingsView {
             | Field::StatusPosition
             | Field::TabLabelAlignment => Kind::Choice,
             Field::RunGraph
+            | Field::AutoTrustProjects
             | Field::PersistAutoApprove
             | Field::AutoTrackTasks
             | Field::AutoTabNames
@@ -458,6 +463,7 @@ impl SettingsView {
 
     fn value(&self, field: Field) -> String {
         match field {
+            Field::AutoTrustProjects => on_off(self.settings.auto_trust_projects).into(),
             Field::PersistAutoApprove => on_off(self.settings.persist_auto_approve).into(),
             Field::AutoTrackTasks => on_off(self.settings.auto_track_tasks).into(),
             Field::AutoTabNames => on_off(self.settings.auto_tab_names).into(),
@@ -511,6 +517,7 @@ impl SettingsView {
     fn switch_value(&self, field: Field) -> bool {
         match field {
             Field::RunGraph => self.settings.run_graph,
+            Field::AutoTrustProjects => self.settings.auto_trust_projects,
             Field::PersistAutoApprove => self.settings.persist_auto_approve,
             Field::AutoTabNames => self.settings.auto_tab_names,
             Field::AutoTrackTasks => self.settings.auto_track_tasks,
@@ -539,6 +546,7 @@ impl SettingsView {
             Field::Overwatch => "Choose a provider, turn Workspace monitoring ON or OFF, open chat in the right panel, and inspect recovery. Management permission is configured separately.",
             Field::AgentConnectors => "Provider connector status",
             Field::AutoApproval => "Workspace permission automation",
+            Field::AutoTrustProjects => "Trust only a complete dialog showing this Project root. Default on; independent of tool Auto-approve. Unknown paths stay manual.",
             Field::PersistAutoApprove => "Keep each Workspace's ON/OFF choice across restarts. Does not enable approval. Default off; config is machine-wide.",
             Field::AutoUpdateConnectors => "Refresh installed connectors when Uniterm updates.",
             Field::AutoInstallConnectors => "Install missing connectors for installed agent CLIs.",
@@ -709,6 +717,10 @@ impl SettingsView {
         let mut patch = SettingsPatch::default();
         match field {
             Field::RunGraph => toggle(&mut self.settings.run_graph, &mut patch.run_graph),
+            Field::AutoTrustProjects => toggle(
+                &mut self.settings.auto_trust_projects,
+                &mut patch.auto_trust_projects,
+            ),
             Field::PersistAutoApprove => toggle(
                 &mut self.settings.persist_auto_approve,
                 &mut patch.persist_auto_approve,
@@ -1196,9 +1208,9 @@ impl SettingsView {
         }
         if matches!(
             field,
-            Field::AutoUpdateConnectors | Field::AutoInstallConnectors
+            Field::AutoTrustProjects | Field::AutoUpdateConnectors | Field::AutoInstallConnectors
         ) {
-            return if row == APPROVAL_CONTROL_ROW {
+            return if row == Self::control_row(field) {
                 match approval_choice(usize::from(x - pane_x - 1)) {
                     Some(enabled) if enabled != self.switch_value(field) => {
                         SettingsAction::Apply(self.change(true))
@@ -1871,6 +1883,7 @@ mod tests {
             auto_tab_names: false,
             auto_track_tasks: true,
             persist_auto_approve: false,
+            auto_trust_projects: true,
             switcher_enabled: false,
             guardrail_max_active_runs: 8,
             guardrail_max_role_panes: 16,
@@ -1969,6 +1982,41 @@ mod tests {
         select(&mut view, Field::Theme);
         state.disable();
         assert!(!view.refresh_overwatch(&state));
+    }
+
+    #[test]
+    fn project_trust_setting_uses_shared_switch_without_enabling_tools() {
+        for (cols, rows) in [(80, 24), (120, 40)] {
+            let mut view = SettingsView::new(snapshot(), true, None);
+            select(&mut view, Field::AutoTrustProjects);
+            assert!(view.settings.auto_trust_projects);
+            assert_eq!(
+                view.handle(b" ", cols, rows),
+                SettingsAction::Apply(SettingsPatch {
+                    auto_trust_projects: Some(false),
+                    ..Default::default()
+                })
+            );
+            assert!(!view.auto_approve);
+            let rect = SettingsView::rect(cols, rows);
+            assert_eq!(
+                view.click(
+                    cols,
+                    rows,
+                    rect.x + LIST_W + 4,
+                    rect.y + 1 + CONTROL_ROW as u16
+                ),
+                SettingsAction::Apply(SettingsPatch {
+                    auto_trust_projects: Some(true),
+                    ..Default::default()
+                })
+            );
+            assert!(!view.auto_approve);
+            assert!(!view.settings.persist_auto_approve);
+            assert!(String::from_utf8(view.render(cols, rows))
+                .unwrap()
+                .contains("Auto-trust Project"));
+        }
     }
 
     #[test]

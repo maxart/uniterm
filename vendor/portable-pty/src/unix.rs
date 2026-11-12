@@ -12,7 +12,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::{io, mem, ptr};
+use std::{io, mem};
 
 pub use std::os::unix::io::RawFd;
 
@@ -20,31 +20,48 @@ pub use std::os::unix::io::RawFd;
 pub struct UnixPtySystem {}
 
 fn openpty(size: PtySize) -> anyhow::Result<(UnixMasterPty, UnixSlavePty)> {
-    let mut master: RawFd = -1;
-    let mut slave: RawFd = -1;
-
-    let mut size = winsize {
+    let size = winsize {
         ws_row: size.rows,
         ws_col: size.cols,
         ws_xpixel: size.pixel_width,
         ws_ypixel: size.pixel_height,
     };
 
-    let result = unsafe {
-        // BSDish systems may require mut pointers to some args
-        #[allow(clippy::unnecessary_mut_passed)]
-        libc::openpty(
-            &mut master,
-            &mut slave,
-            ptr::null_mut(),
-            ptr::null_mut(),
-            &mut size,
-        )
+    // Uniterm patch: on Linux both descriptors are close-on-exec from
+    // creation, so a child spawned concurrently by another thread cannot
+    // keep the slave open. See ../UNITERM_PATCH.md.
+    #[cfg(target_os = "linux")]
+    let (master, slave) = {
+        use std::os::fd::IntoRawFd;
+        match pty_alloc::open_cloexec_pair(&size) {
+            Ok((master, slave)) => (master.into_raw_fd(), slave.into_raw_fd()),
+            Err(error) => bail!("failed to openpty: {:?}", error),
+        }
     };
 
-    if result != 0 {
-        bail!("failed to openpty: {:?}", io::Error::last_os_error());
-    }
+    #[cfg(not(target_os = "linux"))]
+    let (master, slave) = {
+        let mut master: RawFd = -1;
+        let mut slave: RawFd = -1;
+        let mut size = size;
+
+        let result = unsafe {
+            // BSDish systems may require mut pointers to some args
+            #[allow(clippy::unnecessary_mut_passed)]
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut size,
+            )
+        };
+
+        if result != 0 {
+            bail!("failed to openpty: {:?}", io::Error::last_os_error());
+        }
+        (master, slave)
+    };
 
     let tty_name = tty_name(slave);
 
@@ -61,6 +78,8 @@ fn openpty(size: PtySize) -> anyhow::Result<(UnixMasterPty, UnixSlavePty)> {
     // the child process.  This is done after constructing the Pty
     // instances so that we ensure that the Ptys get drop()'d if
     // the cloexec() functions fail (unlikely!).
+    // Linux allocation already sets FD_CLOEXEC atomically; this existing
+    // idempotent final check is retained there, and other systems rely on it.
     cloexec(master.fd.as_raw_fd())?;
     cloexec(slave.fd.as_raw_fd())?;
 
@@ -178,6 +197,10 @@ pub fn close_random_fds() {
 
 #[path = "unix_cloexec.rs"]
 mod child_fds;
+
+#[cfg(target_os = "linux")]
+#[path = "unix_openpty.rs"]
+mod pty_alloc;
 
 impl PtyFd {
     fn resize(&self, size: PtySize) -> Result<(), Error> {

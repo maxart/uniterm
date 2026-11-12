@@ -17,8 +17,8 @@
 //!   (Grok merges every JSON in that directory at startup, so install/remove
 //!   never touches shared config).
 //! - Kiro: flat hook entries in `~/.kiro/agents/kiro_default.json`.
-//! - OpenCode: a TypeScript plugin dropped into
-//!   `~/.config/opencode/plugins/` (auto-discovered; no config merge).
+//! - OpenCode: a configured local v1 package and an auto-discovered v2 TUI
+//!   under the XDG config directory, with a version-specific immutable-config fallback.
 //! - Cursor: flat command hooks in `~/.cursor/hooks.json`.
 //! - Pi: a TypeScript extension dropped into
 //!   `~/.pi/agent/extensions/` (auto-discovered; no config merge).
@@ -1576,152 +1576,9 @@ export default function unitermNotify(pi: ExtensionAPI) {
     }
 }
 
-/// OpenCode: hooks are in-process plugins, not shell commands, so this drops
-/// version-specific auto-discovered plugins under the XDG config directory.
-/// V1 is a server function; V2 separates the server definition and local TUI
-/// lifecycle observer. Uninstall removes both managed layouts.
-mod opencode {
-    use std::path::PathBuf;
-
-    /// The plugin source. Kept dependency-free and untyped so it loads under
-    /// OpenCode's bundled runtime as-is; the marker URI doubles as the
-    /// installed-ness probe.
-    pub(super) const PLUGIN: &str = include_str!("connectors/opencode-v1.js");
-    const SERVER: &str = "// uniterm://cli-agent - lifecycle belongs to the local TUI.\nexport default { id: \"uniterm.notify\", setup() {} }\n";
-    const TUI: &str = include_str!("connectors/opencode-tui.js");
-
-    pub(super) fn plugin_path() -> Option<PathBuf> {
-        let base = std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .or_else(|| Some(super::home()?.join(".config")))?;
-        Some(base.join("opencode/plugins/uniterm-notify.ts"))
-    }
-
-    pub(super) fn status() -> super::ConnectorStatus {
-        let Some(path) = plugin_path() else {
-            return super::ConnectorStatus::NotInstalled;
-        };
-        let directory = path.with_extension("");
-        let legacy = std::fs::read_to_string(&path).ok();
-        let server = std::fs::read_to_string(directory.join("index.ts")).ok();
-        let tui = std::fs::read_to_string(directory.join("tui.ts")).ok();
-        if legacy.as_deref() == Some(PLUGIN) && server.is_none() && tui.is_none()
-            || legacy.is_none() && server.as_deref() == Some(SERVER) && tui.as_deref() == Some(TUI)
-        {
-            return super::ConnectorStatus::Installed;
-        }
-        if legacy
-            .iter()
-            .chain(server.iter())
-            .chain(tui.iter())
-            .any(|text| text.contains(super::MARKER))
-        {
-            super::ConnectorStatus::Outdated
-        } else {
-            super::ConnectorStatus::NotInstalled
-        }
-    }
-
-    // Probe only during explicit installation, never during status refresh or
-    // on the core loop. A missing CLI defaults to the current v2 contract.
-    fn legacy_cli() -> std::io::Result<bool> {
-        use std::io::Read;
-        use std::process::{Command, Stdio};
-        let mut child = match Command::new("opencode")
-            .arg("--version")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-        {
-            Ok(child) => child,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-            Err(error) => return Err(error),
-        };
-        // An explicit version probe has a bounded deadline and a kernel exit
-        // watch, never a recurring timer or process-table scan.
-        let exited = crate::process_watch::ProcessWatch::new(child.id() as i32)
-            .and_then(|watch| watch.wait_exit(std::time::Duration::from_secs(2)))
-            .unwrap_or(false);
-        if !exited && !child.try_wait().is_ok_and(|status| status.is_some()) {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "opencode --version timed out; connector unchanged",
-            ));
-        }
-        if !child.wait()?.success() {
-            return Err(std::io::Error::other(
-                "opencode --version failed; connector unchanged",
-            ));
-        }
-        let mut version = String::new();
-        if let Some(stdout) = child.stdout.take() {
-            stdout.take(256).read_to_string(&mut version)?;
-        }
-        legacy_version(&version)
-    }
-
-    fn legacy_version(version: &str) -> std::io::Result<bool> {
-        let version = version.trim();
-        let version = version.strip_prefix("opencode ").unwrap_or(version);
-        match version.trim_start_matches('v').split('.').next() {
-            Some("1") => Ok(true),
-            Some("2") => Ok(false),
-            _ => Err(std::io::Error::other(
-                "unrecognized OpenCode version; connector unchanged",
-            )),
-        }
-    }
-
-    #[test]
-    fn version_probe_requires_a_known_contract() {
-        assert!(legacy_version("1.2.27\n").unwrap());
-        assert!(!legacy_version("v2.0.0-beta.3\n").unwrap());
-        assert!(!legacy_version("opencode v2.0.26\n").unwrap());
-        assert!(legacy_version("error loading configuration").is_err());
-        assert!(legacy_version("3.0.0").is_err());
-    }
-
-    fn remove_file(path: &std::path::Path) -> std::io::Result<()> {
-        match std::fs::remove_file(path) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            result => result,
-        }
-    }
-
-    pub(super) fn install_version(path: &std::path::Path, legacy: bool) -> std::io::Result<()> {
-        let directory = path.with_extension("");
-        if legacy {
-            super::write_atomic(path, PLUGIN)?;
-            remove_file(&directory.join("index.ts"))?;
-            remove_file(&directory.join("tui.ts"))?;
-            let _ = std::fs::remove_dir(directory);
-        } else {
-            super::write_atomic(&directory.join("index.ts"), SERVER)?;
-            super::write_atomic(&directory.join("tui.ts"), TUI)?;
-            remove_file(path)?;
-        }
-        Ok(())
-    }
-
-    pub(super) fn toggle(install: bool) -> Option<std::io::Result<()>> {
-        let path = plugin_path()?;
-        Some(if install {
-            legacy_cli().and_then(|legacy| install_version(&path, legacy))
-        } else {
-            (|| {
-                remove_file(&path)?;
-                let directory = path.with_extension("");
-                remove_file(&directory.join("index.ts"))?;
-                remove_file(&directory.join("tui.ts"))?;
-                let _ = std::fs::remove_dir(directory);
-                Ok(())
-            })()
-        })
-    }
-}
+/// OpenCode uses a configured local package to select each loader's native
+/// entrypoint, keeping v1 hooks and v2 local TUI lifecycle signals separate.
+mod opencode;
 
 #[cfg(test)]
 mod tests {
@@ -2111,29 +1968,33 @@ mod tests {
             // XDG_CONFIG_HOME must not leak in from the host environment.
             let old_xdg = std::env::var_os("XDG_CONFIG_HOME");
             std::env::remove_var("XDG_CONFIG_HOME");
-            let plug = home.join(".config/opencode/plugins/uniterm-notify.ts");
+            let old = home.join(".config/opencode/plugins/uniterm-notify.ts");
+            let plug = opencode::plugin_path().unwrap();
             write_atomic(
-                &plug,
+                &old,
                 "// uniterm://cli-agent\nexport const Old = async () => ({})",
             )
             .unwrap();
             assert_eq!(status("opencode"), ConnectorStatus::Outdated);
-            for legacy in [true, false, true, false] {
-                opencode::install_version(&plug, legacy).unwrap();
+            for _ in 0..4 {
+                opencode::install(&plug).unwrap();
                 assert_eq!(status("opencode"), ConnectorStatus::Installed);
-                assert_eq!(plug.exists(), legacy);
-                assert_eq!(plug.with_extension("").join("tui.ts").exists(), !legacy);
+                assert!(plug.exists());
+                assert!(!old.exists());
+                assert!(home
+                    .join(".config/opencode/plugins/uniterm-notify/tui.ts")
+                    .exists());
             }
             std::fs::write(
-                plug.with_extension("").join("tui.ts"),
+                home.join(".config/opencode/plugins/uniterm-notify/tui.ts"),
                 "// uniterm://cli-agent old",
             )
             .unwrap();
             assert_eq!(status("opencode"), ConnectorStatus::Outdated);
-            opencode::install_version(&plug, false).unwrap();
+            opencode::install(&plug).unwrap();
             assert_eq!(toggle("opencode"), ConnectorStatus::NotInstalled);
             assert!(!plug.exists());
-            assert!(!plug.with_extension("").exists());
+            assert!(!plug.parent().unwrap().exists());
             if let Some(v) = old_xdg {
                 std::env::set_var("XDG_CONFIG_HOME", v);
             }

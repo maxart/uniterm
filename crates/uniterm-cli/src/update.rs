@@ -515,23 +515,65 @@ pub(super) fn interactive() {
 mod tests {
     use super::*;
     use std::cell::RefCell;
+    use std::io::Write;
+
+    // Keep executable writes in a child, like the production curl downloader.
+    // Concurrent test spawns can inherit even CLOEXEC write descriptors until
+    // they exec, making an otherwise closed fixture temporarily ETXTBSY.
+    fn write_executable_fixture(path: &Path, bytes: &[u8]) -> io::Result<()> {
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "cat > \"$1\"", "fixture-writer"])
+            .arg(path)
+            .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let written = child.stdin.take().unwrap().write_all(bytes);
+        let output = child.wait_with_output()?;
+        written?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(io::Error::other(format!(
+                "fixture writer failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )))
+        }
+    }
 
     #[test]
     fn connector_refresh_executes_the_installed_binary_and_reports_failure() {
         let stage = Stage::create(&std::env::temp_dir()).unwrap();
         let binary = stage.0.join("uniterm");
-        fs::write(
+        write_executable_fixture(
             &binary,
-            "#!/bin/sh\n[ \"$1 $2 $3\" = \"agent connector auto-update\" ] || exit 7\n",
+            b"#!/bin/sh\n[ \"$1 $2 $3\" = \"agent connector auto-update\" ] || exit 7\n",
         )
         .unwrap();
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
         refresh_with_binary(&binary).unwrap();
-        fs::write(&binary, "#!/bin/sh\necho retry-needed >&2\nexit 1\n").unwrap();
+        write_executable_fixture(&binary, b"#!/bin/sh\necho retry-needed >&2\nexit 1\n").unwrap();
         assert!(refresh_with_binary(&binary)
             .unwrap_err()
             .to_string()
             .contains("retry-needed"));
+    }
+
+    #[test]
+    fn executable_fixtures_remain_executable_during_concurrent_spawns() {
+        let root = Stage::create(&std::env::temp_dir()).unwrap();
+        std::thread::scope(|scope| {
+            for worker in 0..8 {
+                let root = &root.0;
+                scope.spawn(move || {
+                    for iteration in 0..32 {
+                        let path = root.join(format!("{worker}-{iteration}"));
+                        write_executable_fixture(&path, b"#!/bin/sh\nexit 0\n").unwrap();
+                        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+                        assert!(Command::new(&path).status().unwrap().success());
+                    }
+                });
+            }
+        });
     }
 
     #[test]
@@ -602,7 +644,7 @@ mod tests {
             } else if self.corrupt && url.contains("/ut-") {
                 fs::write(path, b"bad")
             } else {
-                fs::write(path, BINARY)
+                write_executable_fixture(path, BINARY)
             }
         }
 

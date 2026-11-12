@@ -202,20 +202,28 @@ impl Line {
         }
     }
 
-    fn trim_default_tail(&mut self) {
+    // scroll_up also relies on every cell after this prefix being exactly
+    // Cell::default(), including style and arena handles, not merely a space.
+    fn retained_len(&self) -> usize {
         if self.wrapped {
-            return;
+            return self.cells.len();
         }
-        let keep = self
-            .cells
+        self.cells
             .iter()
             .rposition(|cell| *cell != Cell::default())
-            .map_or(0, |index| index + 1);
+            .map_or(0, |index| index + 1)
+    }
+
+    fn trim_to(&mut self, keep: usize) {
         if keep < self.cells.len() {
             let mut cells = std::mem::take(&mut self.cells).into_vec();
             cells.truncate(keep);
             self.cells = cells.into_boxed_slice();
         }
+    }
+
+    fn trim_default_tail(&mut self) {
+        self.trim_to(self.retained_len());
     }
 }
 
@@ -635,6 +643,7 @@ impl Grid {
     }
 
     /// Low-level cell assignment for moves within this same grid.
+    #[inline]
     pub fn set(&mut self, x: u16, y: u16, cell: Cell) {
         if x >= self.width || y >= self.height {
             return;
@@ -731,6 +740,71 @@ impl Grid {
         }
     }
 
+    /// Write an already segmented scalar without encoding and decoding UTF-8
+    /// again. Wide writes and overlapping wide glyphs retain the general repair
+    /// path; ordinary narrow replacements preserve exact no-op damage.
+    #[inline]
+    pub fn set_scalar(&mut self, x: u16, y: u16, ch: char, mut cell: Cell, width: u8) {
+        if width.clamp(1, 2) == 1
+            && x < self.width
+            && y < self.height
+            && self.lines[y as usize].cells[x as usize].width == 1
+        {
+            cell.ch = ch;
+            cell.width = 1;
+            cell.cluster = 0;
+            self.set(x, y, cell);
+        } else {
+            self.set_grapheme(x, y, ch.encode_utf8(&mut [0; 4]), cell, width);
+        }
+    }
+
+    /// Replace an ordinary row prefix while merging only actual cell damage.
+    ///
+    /// The caller owns grapheme boundaries and cursor semantics. Stop before a
+    /// non-printable ASCII byte, a wide glyph or the row edge, returning the
+    /// consumed byte count so the caller can use its normal glyph repair path.
+    /// No-op replacements consume bytes without creating damage.
+    pub fn set_ascii_prefix(&mut self, x: u16, y: u16, bytes: &[u8], mut cell: Cell) -> usize {
+        if x >= self.width || y >= self.height {
+            return 0;
+        }
+        cell.width = 1;
+        cell.cluster = 0;
+        let row = &mut self.lines[y as usize].cells;
+        let available = usize::from(self.width - x).min(bytes.len());
+        let mut consumed = 0;
+        let mut changed = None;
+        for (&byte, target) in bytes[..available]
+            .iter()
+            .zip(row[usize::from(x)..].iter_mut())
+        {
+            if !(b' '..=b'~').contains(&byte) || target.width != 1 {
+                break;
+            }
+            cell.ch = char::from(byte);
+            if *target != cell {
+                *target = cell;
+                let column = x + consumed as u16;
+                changed.get_or_insert((column, column)).1 = column;
+            }
+            consumed += 1;
+        }
+        if let Some((first, last)) = changed {
+            let damage = &mut self.damage[y as usize];
+            if damage.dirty {
+                damage.lo = damage.lo.min(first);
+                damage.hi = damage.hi.max(last);
+            } else {
+                damage.dirty = true;
+                damage.lo = first;
+                damage.hi = last;
+            }
+            self.any_damage = true;
+        }
+        consumed
+    }
+
     /// Write one complete grapheme with a display width of one or two cells.
     pub fn set_grapheme(&mut self, x: u16, y: u16, text: &str, mut cell: Cell, width: u8) {
         if x >= self.width || y >= self.height {
@@ -745,7 +819,11 @@ impl Grid {
             bg: cell.bg,
             ..Cell::default()
         };
-        self.clear_glyph_at(x, y, blank);
+        // An ordinary lead cell can be replaced directly. Clearing it first
+        // both duplicates the write and reports damage for unchanged text.
+        if self.get(x, y).width != 1 {
+            self.clear_glyph_at(x, y, blank);
+        }
         if width == 2 {
             self.clear_glyph_at(x + 1, y, blank);
         }
@@ -777,9 +855,23 @@ impl Grid {
     }
 
     /// Whether appending `ch` to this lead cell remains a single grapheme.
+    #[inline]
     pub fn grapheme_extends(&self, cell: Cell, ch: char) -> bool {
         if cell.is_continuation() {
             return false;
+        }
+        if cell.cluster == 0 {
+            // ASCII has a boundary between every pair except CR/LF. Do not
+            // apply this shortcut across Unicode: Prepend characters, among
+            // others, can join even an ASCII character to the preceding cell.
+            if cell.ch.is_ascii() && ch.is_ascii() {
+                return cell.ch == '\r' && ch == '\n';
+            }
+            let mut bytes = [0; 8];
+            let first_len = cell.ch.encode_utf8(&mut bytes).len();
+            let len = first_len + ch.encode_utf8(&mut bytes[first_len..]).len();
+            let text = std::str::from_utf8(&bytes[..len]).expect("encoded scalar pair");
+            return text.graphemes(true).count() == 1;
         }
         let mut text = self.cell_text_owned(cell);
         text.push(ch);
@@ -812,11 +904,61 @@ impl Grid {
         if self.height == 0 {
             return;
         }
-        let replacement = Line::blank(self.width, blank, self.next_line_id);
+        let id = self.next_line_id;
         self.next_line_id += 1;
         let mut departing = self.lines.remove(0);
-        departing.trim_default_tail();
-        self.push_scrollback(departing);
+        let keep = if self.scrollback_limit == 0 {
+            0
+        } else {
+            departing.retained_len()
+        };
+        // Retain no spare capacity in history. A full-width visible allocation
+        // can become the blank row only after the retained text has an exact
+        // destination, or when this grid deliberately keeps no history.
+        let reusable = if departing.cells.len() != usize::from(self.width) {
+            false
+        } else if self.scrollback_limit == 0 {
+            true
+        } else if self.scrollback.len() == self.scrollback_limit
+            && self
+                .scrollback
+                .front()
+                .is_some_and(|line| line.cells.len() == keep)
+        {
+            if let Some(mut recycled) = self.scrollback.pop_front() {
+                recycled.cells.copy_from_slice(&departing.cells[..keep]);
+                recycled.id = departing.id;
+                recycled.wrapped = departing.wrapped;
+                self.scrollback.push_back(recycled);
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        let replacement = if reusable {
+            // Retention already proved that this suffix contains only default
+            // cells. Avoid rewriting it when the replacement uses that same
+            // blank; styled blanks and uninspected rows still reset in full.
+            let reset_len = if self.scrollback_limit != 0 && blank == Cell::default() {
+                debug_assert!(departing.cells[keep..]
+                    .iter()
+                    .all(|cell| *cell == Cell::default()));
+                keep
+            } else {
+                departing.cells.len()
+            };
+            departing.cells[..reset_len].fill(blank);
+            departing.id = id;
+            departing.wrapped = false;
+            departing
+        } else {
+            let replacement = Line::blank(self.width, blank, id);
+            departing.trim_to(keep);
+            self.push_scrollback(departing);
+            replacement
+        };
         self.lines.push(replacement);
         self.damage.rotate_left(1);
         if let Some(row) = self.damage.last_mut() {
@@ -1514,6 +1656,210 @@ mod tests {
     }
 
     #[test]
+    fn scalar_grapheme_boundaries_match_unicode_segmentation() {
+        let grid = Grid::new(1, 1);
+        let mut chars: Vec<char> = (0..=127).map(char::from).collect();
+        // Prepend, Extend, ZWJ, regional indicators, Hangul and spacing marks
+        // exercise boundaries where "ASCII means a new glyph" is insufficient.
+        chars.extend(
+            "é界\u{600}\u{301}\u{200d}👩💻🇬🇧\u{1100}\u{1161}\u{11a8}\u{903}\u{fe0f}".chars(),
+        );
+        for &first in &chars {
+            for &next in &chars {
+                let text = format!("{first}{next}");
+                assert_eq!(
+                    grid.grapheme_extends(cell(first), next),
+                    text.graphemes(true).count() == 1,
+                    "{text:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn grapheme_replacement_preserves_styles_and_precise_damage() {
+        let mut grid = Grid::new(6, 1);
+        let styled = Cell {
+            fg: Color::Idx(3),
+            bg: Color::Idx(4),
+            attrs: Attrs::BOLD,
+            hyperlink: grid.intern_hyperlink("https://example.test/"),
+            underline_color: grid.intern_underline_color(Color::Idx(5)),
+            ..Cell::default()
+        };
+        for text in ["x", "é", "e\u{301}"] {
+            grid.set_grapheme(2, 0, text, styled, 1);
+            assert_eq!(grid.row_damage(0), Some((2, 2)));
+            grid.clear_damage();
+            grid.set_grapheme(2, 0, text, styled, 1);
+            assert!(!grid.is_dirty(), "unchanged {text:?}");
+            assert_eq!(grid.get(2, 0).attrs, styled.attrs);
+            assert_eq!(grid.get(2, 0).hyperlink, styled.hyperlink);
+            assert_eq!(grid.get(2, 0).underline_color, styled.underline_color);
+        }
+        // Replacing either half must still clear the other half of a wide glyph.
+        for column in [1, 2] {
+            grid.set_grapheme(1, 0, "界", styled, 2);
+            grid.clear_damage();
+            grid.set_grapheme(column, 0, "x", styled, 1);
+            assert_eq!(grid.row_damage(0), Some((1, 2)));
+            assert_eq!(grid.get(column, 0).ch, 'x');
+            assert_eq!(grid.get(3 - column, 0).ch, ' ');
+            assert_eq!(grid.get(3 - column, 0).width, 1);
+        }
+    }
+
+    #[test]
+    fn scalar_writes_match_grapheme_writes_including_damage_and_wide_repairs() {
+        let mut seed = Grid::new(6, 2);
+        let styled = Cell {
+            fg: Color::Idx(3),
+            bg: Color::Idx(4),
+            attrs: Attrs::BOLD,
+            hyperlink: seed.intern_hyperlink("https://example.test/scalar"),
+            underline_color: seed.intern_underline_color(Color::Idx(5)),
+            ..Cell::default()
+        };
+        seed.set_grapheme(1, 0, "界", styled, 2);
+        seed.set_grapheme(3, 0, "e\u{301}", styled, 1);
+        seed.set_grapheme(4, 0, "X", styled, 1);
+        seed.clear_damage();
+        // Include a stale cluster/width in the supplied style: the new scalar
+        // owns these fields, while colours, attributes and links must survive.
+        let supplied = Cell {
+            width: 2,
+            cluster: seed.get(3, 0).cluster,
+            ..styled
+        };
+        for ch in ['X', 'é', '界', '�'] {
+            for width in [0, 1, 2, 3] {
+                for y in 0..=seed.height() {
+                    for x in 0..=seed.width() {
+                        let mut scalar = seed.clone();
+                        let mut grapheme = seed.clone();
+                        for _ in 0..2 {
+                            scalar.set_scalar(x, y, ch, supplied, width);
+                            grapheme.set_grapheme(
+                                x,
+                                y,
+                                ch.encode_utf8(&mut [0; 4]),
+                                supplied,
+                                width,
+                            );
+                            assert_eq!(scalar.export_lines(2), grapheme.export_lines(2));
+                            assert_eq!(scalar.is_dirty(), grapheme.is_dirty());
+                            for row in 0..seed.height() {
+                                assert_eq!(scalar.row_damage(row), grapheme.row_damage(row));
+                                for col in 0..seed.width() {
+                                    assert_eq!(scalar.get(col, row), grapheme.get(col, row));
+                                }
+                            }
+                            scalar.clear_damage();
+                            grapheme.clear_damage();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ascii_prefix_matches_scalar_cells_and_exact_damage() {
+        let mut seed = Grid::new(8, 2);
+        let styled = Cell {
+            fg: Color::Idx(3),
+            bg: Color::Rgb(7, 8, 9),
+            attrs: Attrs(Attrs::BOLD.0 | Attrs::ITALIC.0),
+            hyperlink: seed.intern_hyperlink("https://example.test/ascii"),
+            underline_color: seed.intern_underline_color(Color::Idx(5)),
+            ..Cell::default()
+        };
+        seed.set_grapheme(2, 0, "界", styled, 2);
+        seed.set_grapheme(5, 0, "e\u{301}", styled, 1);
+        seed.set_row_wrapped(0, true);
+        let template = Cell {
+            width: 0,
+            cluster: seed.get(5, 0).cluster,
+            ..styled
+        };
+        let printable: Vec<u8> = (b' '..=b'~').collect();
+        for bytes in [
+            &b""[..],
+            &b"A"[..],
+            &b" A X   Z more"[..],
+            &b"AB\x00CD"[..],
+            &b"\x7fAB"[..],
+            &b"AB\xffCD"[..],
+            printable.as_slice(),
+        ] {
+            for dirty in 0..3 {
+                for y in 0..=seed.height() {
+                    for x in 0..=seed.width() {
+                        let mut batched = seed.clone();
+                        batched.clear_damage();
+                        if dirty == 1 {
+                            batched.set(7, 0, cell('!'));
+                        } else if dirty == 2 {
+                            batched.mark_all_damaged();
+                        }
+                        let mut scalar = batched.clone();
+                        for _ in 0..2 {
+                            let count = batched.set_ascii_prefix(x, y, bytes, template);
+                            let mut expected = 0;
+                            if y < scalar.height() && x < scalar.width() {
+                                for &byte in bytes.iter().take(usize::from(scalar.width() - x)) {
+                                    let column = x + expected as u16;
+                                    if !(b' '..=b'~').contains(&byte)
+                                        || scalar.get(column, y).width != 1
+                                    {
+                                        break;
+                                    }
+                                    scalar.set_scalar(column, y, char::from(byte), template, 1);
+                                    expected += 1;
+                                }
+                            }
+                            assert_eq!(count, expected);
+                            assert_eq!(batched.export_lines(8), scalar.export_lines(8));
+                            assert_eq!(batched.retained_cell_count(), scalar.retained_cell_count());
+                            assert_eq!(batched.is_dirty(), scalar.is_dirty());
+                            assert_eq!(batched.pending_scroll_up(), scalar.pending_scroll_up());
+                            for row in 0..seed.height() {
+                                assert_eq!(batched.row_damage(row), scalar.row_damage(row));
+                                assert_eq!(
+                                    batched.line_id(row as usize),
+                                    scalar.line_id(row as usize)
+                                );
+                                for col in 0..seed.width() {
+                                    assert_eq!(batched.get(col, row), scalar.get(col, row));
+                                }
+                            }
+                            batched.clear_damage();
+                            scalar.clear_damage();
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut grid = Grid::new(8, 1);
+        assert_eq!(grid.set_ascii_prefix(0, 0, b"abcdefgh", Cell::default()), 8);
+        grid.clear_damage();
+        assert_eq!(grid.set_ascii_prefix(0, 0, b"abXdeYgh", Cell::default()), 8);
+        assert_eq!(grid.row_damage(0), Some((2, 5)));
+        grid.clear_damage();
+        grid.set_ascii_prefix(0, 0, b"abXdeYgh", Cell::default());
+        assert!(!grid.is_dirty());
+        for byte in b' '..=b'~' {
+            assert_eq!(grid.set_ascii_prefix(0, 0, &[byte], template), 1);
+            assert_eq!(grid.get(0, 0).ch, char::from(byte));
+            grid.clear_damage();
+            assert_eq!(grid.set_ascii_prefix(0, 0, &[byte], template), 1);
+            assert!(!grid.is_dirty());
+        }
+        assert_eq!(Grid::new(0, 0).set_ascii_prefix(0, 0, b"x", template), 0);
+    }
+
+    #[test]
     fn wide_grapheme_owns_a_continuation() {
         let mut grid = Grid::new(6, 2);
         grid.set_grapheme(1, 0, "界", cell('界'), 2);
@@ -1547,6 +1893,226 @@ mod tests {
         assert_eq!(grid.line_id(0), Some(first));
         assert!(grid.line_wrapped(0));
         assert_eq!(grid.scrollback_len(), 1);
+    }
+
+    // Preserve the pre-reuse algorithm as an independent oracle, including its
+    // trimming and eviction order rather than invoking the new helpers.
+    fn scroll_up_allocating_reference(grid: &mut Grid, blank: Cell) {
+        if grid.height == 0 {
+            return;
+        }
+        let replacement = Line::blank(grid.width, blank, grid.next_line_id);
+        grid.next_line_id += 1;
+        let mut departing = grid.lines.remove(0);
+        if !departing.wrapped {
+            let keep = departing
+                .cells
+                .iter()
+                .rposition(|cell| *cell != Cell::default())
+                .map_or(0, |index| index + 1);
+            if keep < departing.cells.len() {
+                let mut cells = std::mem::take(&mut departing.cells).into_vec();
+                cells.truncate(keep);
+                departing.cells = cells.into_boxed_slice();
+            }
+        }
+        if grid.scrollback_limit != 0 {
+            grid.scrollback.push_back(departing);
+            while grid.scrollback.len() > grid.scrollback_limit {
+                grid.scrollback.pop_front();
+            }
+        }
+        grid.lines.push(replacement);
+        grid.damage.rotate_left(1);
+        if let Some(row) = grid.damage.last_mut() {
+            *row = RowDamage::clean();
+        }
+        grid.pending_scroll_up = grid.pending_scroll_up.saturating_add(1).min(grid.height);
+        grid.mark_rows_damaged(grid.height - 1, grid.height - 1);
+    }
+
+    fn assert_same_scroll_storage(actual: &Grid, expected: &Grid) {
+        assert_eq!(
+            (actual.width, actual.height),
+            (expected.width, expected.height)
+        );
+        assert_eq!(actual.next_line_id, expected.next_line_id);
+        assert_eq!(actual.scrollback_limit, expected.scrollback_limit);
+        assert_eq!(actual.scrollback.len(), expected.scrollback.len());
+        assert_eq!(actual.lines.len(), expected.lines.len());
+        assert_eq!(actual.pending_scroll_up, expected.pending_scroll_up);
+        assert_eq!(actual.any_damage, expected.any_damage);
+        assert_eq!(actual.retained_cell_count(), expected.retained_cell_count());
+        assert_eq!(
+            actual.export_lines(usize::MAX),
+            expected.export_lines(usize::MAX)
+        );
+        assert_eq!(actual.clusters, expected.clusters);
+        assert_eq!(actual.hyperlinks, expected.hyperlinks);
+        assert_eq!(actual.underline_colors, expected.underline_colors);
+        // Box<[Cell]> has no hidden spare capacity; every retained allocation
+        // must have exactly the same length as the compact reference row.
+        for (a, b) in actual
+            .scrollback
+            .iter()
+            .chain(&actual.lines)
+            .zip(expected.scrollback.iter().chain(&expected.lines))
+        {
+            assert_eq!(a.cells.len(), b.cells.len());
+            assert_eq!(a.cells, b.cells);
+            assert_eq!((a.id, a.wrapped), (b.id, b.wrapped));
+        }
+        for (a, b) in actual.damage.iter().zip(&expected.damage) {
+            assert_eq!((a.dirty, a.lo, a.hi), (b.dirty, b.lo, b.hi));
+        }
+    }
+
+    #[test]
+    fn reused_scroll_storage_matches_allocating_reference_and_memory_bounds() {
+        for (width, height) in [(0, 0), (0, 2), (1, 1), (2, 3), (8, 3), (160, 4)] {
+            for limit in [0, 1, 3, 10_000] {
+                let mut actual = Grid::new(width, height);
+                actual.set_scrollback_limit(limit);
+                let styled = Cell {
+                    fg: Color::Idx(3),
+                    bg: Color::Rgb(4, 5, 6),
+                    attrs: Attrs::BOLD,
+                    hyperlink: actual.intern_hyperlink("https://example.test/scroll"),
+                    underline_color: actual.intern_underline_color(Color::Idx(7)),
+                    ..Cell::default()
+                };
+                let mut expected = actual.clone();
+                for round in 0..32 {
+                    for grid in [&mut actual, &mut expected] {
+                        if round % 3 == 0 {
+                            grid.clear_damage();
+                        }
+                        let width = grid.width;
+                        if grid.height != 0 {
+                            grid.erase_cells(0, 0, width, Cell::default());
+                            let prefix = match round % 5 {
+                                0 => 0,
+                                1 => 3.min(width),
+                                2 => width,
+                                3 => width / 2,
+                                _ => width.saturating_sub(1),
+                            };
+                            for x in 0..prefix {
+                                grid.set_scalar(x, 0, 'x', styled, 1);
+                            }
+                            if width > 0 && round % 7 == 0 {
+                                grid.set_grapheme(0, 0, "e\u{301}", styled, 1);
+                            }
+                            if width >= 2 && round % 7 == 1 {
+                                grid.set_grapheme(width - 2, 0, "界", styled, 2);
+                            }
+                            if width > 0 && round % 7 == 2 {
+                                // A coloured, linked trailing space is retained.
+                                grid.set(width - 1, 0, styled);
+                            }
+                            grid.set_row_wrapped(0, round % 6 == 0);
+                        }
+                    }
+                    let blank = if round % 4 == 0 {
+                        styled
+                    } else {
+                        Cell::default()
+                    };
+                    actual.scroll_up(blank);
+                    scroll_up_allocating_reference(&mut expected, blank);
+                    assert_same_scroll_storage(&actual, &expected);
+                    // These grids started with equal container capacities;
+                    // reuse must not grow a hidden allocation cache either.
+                    assert!(actual.scrollback.capacity() <= expected.scrollback.capacity());
+                    assert!(actual.lines.capacity() <= expected.lines.capacity());
+                    if [7, 15, 23].contains(&round) {
+                        let new_limit = match round {
+                            7 => 0,
+                            15 => 3,
+                            _ => limit,
+                        };
+                        actual.set_scrollback_limit(new_limit);
+                        expected.set_scrollback_limit(new_limit);
+                        assert_same_scroll_storage(&actual, &expected);
+                    }
+                    if round == 12 {
+                        actual.clear_scrollback();
+                        expected.clear_scrollback();
+                        assert_same_scroll_storage(&actual, &expected);
+                    }
+                    if round == 20 && height > 0 && width > 0 {
+                        let a = actual.resize_reflow(width + 2, height + 1, blank, (0, 0), false);
+                        let b = expected.resize_reflow(width + 2, height + 1, blank, (0, 0), false);
+                        assert_eq!(a, b);
+                        assert_same_scroll_storage(&actual, &expected);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn scroll_reuses_only_exact_boxes_and_preserves_line_ownership() {
+        for limit in [0, 1] {
+            for wrapped in [false, true] {
+                let mut grid = Grid::new(8, 1);
+                grid.set_scrollback_limit(limit);
+                grid.set_ascii_prefix(0, 0, b"abc", Cell::default());
+                grid.set_row_wrapped(0, wrapped);
+                grid.scroll_up(Cell::default());
+                for _ in 0..8 {
+                    grid.set_ascii_prefix(0, 0, b"abc", Cell::default());
+                    grid.set_row_wrapped(0, wrapped);
+                    let visible = grid.lines[0].cells.as_ptr();
+                    let old_id = grid.lines[0].id;
+                    let next_id = grid.next_line_id;
+                    let history = grid.scrollback.front().map(|line| line.cells.as_ptr());
+                    grid.scroll_up(Cell::default());
+                    assert_eq!(grid.lines[0].cells.as_ptr(), visible);
+                    assert_eq!(grid.lines[0].id, next_id);
+                    assert!(!grid.lines[0].wrapped);
+                    assert!(grid.lines[0]
+                        .cells
+                        .iter()
+                        .all(|cell| *cell == Cell::default()));
+                    if let Some(history) = history {
+                        let retained = grid.scrollback.back().unwrap();
+                        assert_eq!(retained.cells.as_ptr(), history);
+                        assert_eq!(retained.id, old_id);
+                        assert_eq!(retained.wrapped, wrapped);
+                        assert_eq!(retained.cells.len(), if wrapped { 8 } else { 3 });
+                    }
+                }
+            }
+        }
+        // A mismatched eviction must not leave a larger box in compact history.
+        let mut grid = Grid::new(8, 1);
+        grid.set_scrollback_limit(1);
+        grid.set_ascii_prefix(0, 0, b"abcdef", Cell::default());
+        grid.scroll_up(Cell::default());
+        grid.set_ascii_prefix(0, 0, b"xy", Cell::default());
+        let mut expected = grid.clone();
+        grid.scroll_up(Cell::default());
+        scroll_up_allocating_reference(&mut expected, Cell::default());
+        assert_same_scroll_storage(&grid, &expected);
+        assert_eq!(grid.scrollback[0].cells.len(), 2);
+    }
+
+    #[test]
+    fn partial_region_history_keeps_its_existing_full_row_policy() {
+        let mut grid = Grid::new(8, 3);
+        grid.set_scrollback_limit(1);
+        for _ in 0..3 {
+            grid.set_ascii_prefix(0, 0, b"abc", Cell::default());
+            grid.scroll_region_up(0, 1, Cell::default());
+            assert_eq!(grid.scrollback[0].cells.len(), 8);
+        }
+        let history = grid.export_lines(usize::MAX)[0].clone();
+        let id = grid.first_line_id();
+        grid.scroll_region_up_discarding(0, 1, Cell::default());
+        grid.scroll_region_down(0, 1, Cell::default());
+        assert_eq!(grid.first_line_id(), id);
+        assert_eq!(grid.export_lines(usize::MAX)[0], history);
     }
 
     #[test]

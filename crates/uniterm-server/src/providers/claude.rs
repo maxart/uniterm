@@ -310,6 +310,8 @@ pub(super) const APPROVAL_DIALOGS: &[super::approval::Dialog] = &[super::approva
     ],
     allow: &["yes, i trust this folder", "yes, trust this folder"],
     deny: &["no, exit", "no, continue without these permissions"],
+    alternatives: &[],
+    kind: super::approval::ApprovalKind::WorkspaceTrust,
 }];
 
 /// Preserve the provider's generated task text, excluding its application prefix.

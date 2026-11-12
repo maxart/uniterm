@@ -320,9 +320,46 @@ read -r gate
         }
     }
     fast_path_provider_matrix(&root, &sockets);
+    workspace_trust_does_not_need_auto_approve(&root, &sockets);
     manual_navigation_advances_with_auto_mode_off(&root, &sockets);
     std::fs::remove_dir_all(root).unwrap();
     std::fs::remove_dir_all(sockets).unwrap();
+}
+
+fn workspace_trust_does_not_need_auto_approve(root: &Path, sockets: &Path) {
+    let result = root.join("implicit-workspace-trust");
+    let tool = root.join("implicit-workspace-tool");
+    let checked = root.join("implicit-workspace-tool-checked");
+    let script = format!(
+        r#"
+stty -echo
+printf '\033]777;notify;uniterm://cli-agent;{{"v":1,"event":"prompt_submit","agent":"codex"}}\007'
+printf 'Trust this workspace?\r\n%s\r\n❯ Yes, trust this workspace\r\nNo, exit\r\nEnter to confirm · Esc to cancel' "$PWD"
+IFS= read -r answer
+touch '{}'
+printf '\033[2J\033[HWould you like to run the following command?\r\n echo no\r\n❯ 1. Yes, proceed (y)\r\n2. No, and tell Codex what to do differently (esc)\r\nPress enter to confirm'
+if IFS= read -r -t 0.2 answer; then touch '{}'; fi
+touch '{}'
+read -r stop
+"#,
+        result.display(),
+        tool.display(),
+        checked.display()
+    );
+    let workspace = Workspace::start(
+        sockets.join(format!("{}.sock", common::unique_workspace_name())),
+        script,
+    );
+    assert!(!workspace.mode(None));
+    let start = Instant::now();
+    wait_until(|| result.exists());
+    assert!(start.elapsed() < Duration::from_millis(500));
+    wait_until(|| checked.exists());
+    assert!(!tool.exists(), "workspace trust enabled tool approval");
+    assert!(
+        workspace.waiting().is_empty(),
+        "workspace trust waited for the permission dwell"
+    );
 }
 
 // Exercise the actual PTY -> VT -> provider -> input queue path while the
@@ -340,16 +377,6 @@ fn fast_path_provider_matrix(root: &Path, sockets: &Path) {
         ),
         ("grok", include_str!("fixtures/approval/grok-live.ansi")),
         ("agent", include_str!("fixtures/approval/grok-live.ansi")),
-        ("grok", include_str!("fixtures/approval/grok-trust.txt")),
-        ("agent", include_str!("fixtures/approval/grok-trust.txt")),
-        (
-            "grok",
-            include_str!("fixtures/approval/grok-trust-live.ansi"),
-        ),
-        (
-            "agent",
-            include_str!("fixtures/approval/grok-trust-live.ansi"),
-        ),
         ("pi", include_str!("fixtures/approval/pi-trust.txt")),
         (
             "gemini",
@@ -357,10 +384,12 @@ fn fast_path_provider_matrix(root: &Path, sockets: &Path) {
         ),
     ];
     for (provider, prompt) in cases {
-        let trust_shortcut = prompt.contains("Grok Build may run or modify");
         let prompt_path = root.join(format!("{provider}.prompt"));
         // Text fixtures use LF; PTY output uses explicit CRLF with raw mode.
-        let prompt = prompt.replace("\r\n", "\n").replace('\n', "\r\n");
+        let prompt = prompt
+            .replace("/work", &std::env::current_dir().unwrap().to_string_lossy())
+            .replace("\r\n", "\n")
+            .replace('\n', "\r\n");
         let mut bytes = if provider == "codex" {
             // Exercise bounded-read draining with a burst ending at the
             // 256-KiB read budget, including the clear/home prefix below.
@@ -377,16 +406,12 @@ fn fast_path_provider_matrix(root: &Path, sockets: &Path) {
         let _ = std::fs::remove_file(&ready);
         let navigation = if provider == "claude" {
             r#"IFS= read -rsn3 arrow
-printf '\033[2J\033[HAccessing workspace:\r\n/work\r\nNo, exit\r\n❯ Yes, I trust this folder\r\nEnter to confirm · Esc to cancel'
+printf '\033[2J\033[HAccessing workspace:\r\n%s\r\nNo, exit\r\n❯ Yes, I trust this folder\r\nEnter to confirm · Esc to cancel' "$PWD"
 "#
         } else {
             ""
         };
-        let accept = if trust_shortcut {
-            "IFS= read -rsn1 answer\n[ \"$answer\" = y ] || exit 4"
-        } else {
-            "IFS= read -r answer"
-        };
+        let accept = "IFS= read -r answer";
         let script = format!(
             r#"
 stty -echo -onlcr
@@ -445,9 +470,9 @@ fn manual_navigation_advances_with_auto_mode_off(root: &Path, sockets: &Path) {
         r#"
 stty -echo
 printf '\033]777;notify;uniterm://cli-agent;{{"v":1,"event":"permission_request","agent":"claude"}}\007'
-printf 'Accessing workspace:\r\n/work\r\n❯ No, exit\r\nYes, I trust this folder\r\nEnter to confirm · Esc to cancel'
+printf 'Do you want to proceed?\r\n❯ 2. No, continue without running it\r\n1. Yes\r\nEnter to confirm · Esc to cancel'
 IFS= read -rsn3 arrow
-printf '\033[2J\033[HAccessing workspace:\r\n/work\r\nNo, exit\r\n❯ Yes, I trust this folder\r\nEnter to confirm · Esc to cancel'
+printf '\033[2J\033[HDo you want to proceed?\r\n2. No, continue without running it\r\n❯ 1. Yes\r\nEnter to confirm · Esc to cancel'
 IFS= read -r answer
 touch '{}'
 read -r stop

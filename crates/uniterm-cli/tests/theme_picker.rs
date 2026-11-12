@@ -319,7 +319,7 @@ impl Fixture {
     }
 
     fn connector_setting(&mut self, install: bool, settings: bool) {
-        let steps = 1 + usize::from(install) + usize::from(settings);
+        let steps = 1 + usize::from(install) + 2 * usize::from(settings);
         self.send(&vec![b'j'; steps]);
         self.wait_screen(if install {
             "auto-install-connectors = true"
@@ -375,6 +375,49 @@ impl Fixture {
         self.wait_screen("◉ off");
         self.send(&vec![b'k'; steps]);
         self.wait_screen("Default off.");
+    }
+
+    fn project_trust_setting(&mut self) {
+        self.send(b"jj");
+        self.wait_screen("Auto-trust Project directories");
+        assert!(self.screen.dump_text().contains("◉ on"));
+        self.assert_idle();
+        self.send(b" ");
+        assert!(
+            matches!(self.next_message(), ClientMessage::SettingsApply(patch)
+            if patch == SettingsPatch { auto_trust_projects: Some(false), ..Default::default() })
+        );
+        let mut updated = snapshot();
+        updated.auto_trust_projects = false;
+        self.stream
+            .write_all(&encode_frame(&ServerMessage::Settings {
+                settings: Box::new(updated),
+                saved: true,
+                error: None,
+            }))
+            .unwrap();
+        self.wait_screen("◉ off");
+        let screen = self.screen.dump_text();
+        let (row, line) = screen
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("○ on"))
+            .unwrap();
+        let x = line.chars().position(|c| c == '○').unwrap() as u16 + 1;
+        let y = row as u16 + 1;
+        self.mouse(0, x + 8, y);
+        self.assert_idle();
+        self.send(format!("\x1b[<0;{x};{y}M\x1b[<0;{x};{y}m").as_bytes());
+        assert!(
+            matches!(self.next_message(), ClientMessage::SettingsApply(patch)
+            if patch == SettingsPatch { auto_trust_projects: Some(true), ..Default::default() })
+        );
+        self.settings(true, "uniterm-dark");
+        self.wait_screen("◉ on");
+        self.assert_idle();
+        self.send(b"kk");
+        self.wait_screen("Default off.");
+        assert!(self.screen.dump_text().contains("◉ off"));
     }
 
     fn approval_persistence_setting(&mut self) {
@@ -472,6 +515,7 @@ impl Fixture {
         self.approval(false);
         assert!(self.screen.dump_text().contains("◉ off"));
         self.approval_persistence_setting();
+        self.project_trust_setting();
         self.connector_setting(false, true);
         self.connector_setting(true, true);
         self.send(b"\x1b");
@@ -1037,6 +1081,7 @@ fn snapshot() -> SettingsSnapshot {
         auto_update_connectors: false,
         auto_install_connectors: false,
         persist_auto_approve: false,
+        auto_trust_projects: true,
         auto_tab_names: false,
         auto_track_tasks: true,
         switcher_enabled: false,

@@ -73,6 +73,7 @@ mod orchestration;
 mod project_directory;
 mod projects;
 mod reaper;
+mod render_schedule;
 mod scrolling;
 mod sidebar_labels;
 mod sidebar_resize;
@@ -260,6 +261,7 @@ struct Pane {
     recovery: Option<PaneRecovery>,
     pty: PtyProcess,
     term: Terminal,
+    output_render: render_schedule::OutputRenderSchedule,
     token: Token,
     /// Last known working directory, seeded from the authoritative launch
     /// directory and advanced only by cooperative OSC 7 reports.
@@ -703,6 +705,8 @@ pub struct Server {
     /// out. Edge-triggered readiness never fires again for bytes already
     /// buffered, so they are serviced again before the next blocking poll.
     pending_reads: Vec<Token>,
+    /// Reused work list, populated only by visible scrolling damage.
+    pending_pane_renders: Vec<PaneId>,
     retiring_ptys: HashMap<Token, reaper::RetiringPty>,
     retiring_exits: HashMap<Token, Token>,
     sock_path: PathBuf,
@@ -975,6 +979,7 @@ impl Server {
             last_catalog_line: None,
             pending_catalog_line: None,
             pending_reads: Vec::new(),
+            pending_pane_renders: Vec::new(),
             retiring_ptys: HashMap::new(),
             retiring_exits: HashMap::new(),
             sock_path: sock_path.to_path_buf(),
@@ -1182,6 +1187,7 @@ impl Server {
             self.flush_today_animation(poll.registry());
             self.flush_sidebar_labels(poll.registry());
             self.flush_run_graph(poll.registry());
+            self.flush_pane_renders_due(poll.registry(), std::time::Instant::now(), false);
             self.agents.check_health()?;
         }
         Ok(())
@@ -1195,6 +1201,7 @@ impl Server {
     /// buffers only a few KiB, that was the common case. The wait is bounded
     /// so a client that never reads cannot hold the stop open.
     fn drain_clients_before_exit(&mut self, poll: &mut Poll) {
+        self.flush_pane_renders_due(poll.registry(), std::time::Instant::now(), true);
         let deadline = std::time::Instant::now() + CLIENT_DRAIN_BOUND;
         let mut events = Events::with_capacity(64);
         loop {
@@ -1281,6 +1288,7 @@ impl Server {
             ))
             .chain(self.today_animation_deadline())
             .chain(self.sidebar_label_deadline())
+            .chain(self.pane_render_deadline())
             .chain(self.overwatch_due)
             .chain(self.snapshot_deadline)
             .chain(self.next_reap_deadline())
@@ -1556,6 +1564,7 @@ impl Server {
                 recovery: None,
                 pty,
                 term,
+                output_render: Default::default(),
                 token,
                 cwd: cwd.map(Path::to_path_buf),
                 copy: None,
@@ -1620,6 +1629,7 @@ impl Server {
             auto_update_connectors: self.config.auto_update_connectors,
             auto_install_connectors: self.config.auto_install_connectors,
             persist_auto_approve: self.config.persist_auto_approve,
+            auto_trust_projects: self.config.auto_trust_projects,
             auto_tab_names: self.config.auto_tab_names,
             auto_track_tasks: self.config.auto_track_tasks,
             switcher_enabled: self.config.switcher_enabled,
@@ -2248,6 +2258,41 @@ impl Server {
         token: Token,
         mut patch: uniterm_proto::SettingsPatch,
     ) {
+        // This policy changes no geometry. A repeated value must not redraw or
+        // re-inspect dialogs; Settings still gets the normal saved reply.
+        if let Some(enabled) = patch.auto_trust_projects {
+            if patch
+                == (uniterm_proto::SettingsPatch {
+                    auto_trust_projects: Some(enabled),
+                    ..Default::default()
+                })
+            {
+                let changed = self.config.auto_trust_projects != enabled;
+                self.config.auto_trust_projects = enabled;
+                if changed {
+                    let clients: Vec<_> = self
+                        .clients
+                        .iter()
+                        .filter(|(_, client)| client.attached && client.direct.is_none())
+                        .map(|(token, _)| *token)
+                        .collect();
+                    for client in clients {
+                        self.reply_settings(reg, client, false, None);
+                    }
+                    if enabled {
+                        let panes: Vec<_> = self.panes.keys().copied().collect();
+                        for pane in panes {
+                            self.maybe_auto_approve(reg, pane);
+                        }
+                    }
+                }
+                self.agents.send(uniterm_proto::CoreToAgent::ConfigSave {
+                    client: token.0 as u64,
+                    text: self.config.to_text(),
+                });
+                return;
+            }
+        }
         let tab_label_alignment = match patch.tab_label_alignment.as_deref() {
             Some(value) => match uniterm_core::TabLabelAlignment::parse(value) {
                 Some(alignment) => Some(alignment),
@@ -2404,6 +2449,7 @@ impl Server {
             self.config.notification_sound_file = file.trim().to_string();
         }
         let previous_focus_follows_mouse = self.config.focus_follows_mouse;
+        let previous_auto_trust_projects = self.config.auto_trust_projects;
         let previous_persist_auto_approve = self.config.persist_auto_approve;
         if let Some(focus) = patch.focus_follows_mouse {
             self.config.focus_follows_mouse = focus;
@@ -2425,6 +2471,9 @@ impl Server {
             for pane in self.panes.values_mut() {
                 pane.term.set_scrollback_limit(self.config.scrollback_limit);
             }
+        }
+        if let Some(enabled) = patch.auto_trust_projects {
+            self.config.auto_trust_projects = enabled;
         }
         if let Some(enabled) = patch.persist_auto_approve {
             self.config.persist_auto_approve = enabled;
@@ -2493,6 +2542,7 @@ impl Server {
         self.relayout();
         self.full_repaint_all(reg);
         if self.config.focus_follows_mouse != previous_focus_follows_mouse
+            || self.config.auto_trust_projects != previous_auto_trust_projects
             || self.config.persist_auto_approve != previous_persist_auto_approve
         {
             let clients: Vec<_> = self
@@ -2503,6 +2553,12 @@ impl Server {
                 .collect();
             for client in clients {
                 self.reply_settings(reg, client, false, None);
+            }
+        }
+        if self.config.auto_trust_projects && !previous_auto_trust_projects {
+            let panes: Vec<_> = self.panes.keys().copied().collect();
+            for pane in panes {
+                self.maybe_auto_approve(reg, pane);
             }
         }
         self.agents.send(uniterm_proto::CoreToAgent::ConfigSave {

@@ -689,6 +689,15 @@ mod tests {
         ));
     }
 
+    // The exact vendored Linux allocation helper, tested without a fcntl pass.
+    #[cfg(target_os = "linux")]
+    mod pty_alloc {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendor/portable-pty/src/unix_openpty.rs"
+        ));
+    }
+
     struct TestPty(PtyProcess);
 
     impl Drop for TestPty {
@@ -1275,5 +1284,189 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn close_on_exec(fd: &std::os::fd::OwnedFd) -> bool {
+        use std::os::fd::AsRawFd;
+        // SAFETY: F_GETFD only reads the flags of a live descriptor.
+        let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFD) };
+        assert!(flags >= 0, "{}", std::io::Error::last_os_error());
+        flags & libc::FD_CLOEXEC != 0
+    }
+
+    #[cfg(target_os = "linux")]
+    fn descriptor_target(fd: &std::os::fd::OwnedFd) -> std::path::PathBuf {
+        use std::os::fd::AsRawFd;
+        std::fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd())).unwrap()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn test_winsize() -> libc::winsize {
+        libc::winsize {
+            ws_row: 24,
+            ws_col: 80,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_pty_pair_is_close_on_exec_from_allocation() {
+        use std::os::fd::AsRawFd;
+
+        // No fcntl pass runs after these opens, so the flag proves that each
+        // descriptor was created close-on-exec rather than marked later.
+        let (master, slave) = pty_alloc::open_cloexec_pair(&test_winsize()).unwrap();
+        assert!(close_on_exec(&master), "PTY master was inheritable");
+        assert!(close_on_exec(&slave), "PTY slave was inheritable");
+        // SAFETY: isatty only inspects a live descriptor.
+        assert_eq!(unsafe { libc::isatty(slave.as_raw_fd()) }, 1);
+
+        let mut name: [libc::c_char; 512] = [0; 512];
+        // SAFETY: the buffer is writable for its full length and the master is live.
+        let error = unsafe { libc::ptsname_r(master.as_raw_fd(), name.as_mut_ptr(), name.len()) };
+        assert_eq!(error, 0, "{}", std::io::Error::from_raw_os_error(error));
+        // SAFETY: ptsname_r succeeded, so the buffer holds a NUL-terminated name.
+        let name = unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) };
+        let peer = std::path::PathBuf::from(name.to_str().unwrap());
+        assert_eq!(
+            descriptor_target(&slave),
+            peer,
+            "slave is not the master's peer"
+        );
+
+        // SAFETY: winsize contains only integers, so all-zero is a valid value.
+        let mut seen: libc::winsize = unsafe { std::mem::zeroed() };
+        assert_eq!(
+            // SAFETY: TIOCGWINSZ writes one winsize into a valid local value.
+            unsafe { libc::ioctl(slave.as_raw_fd(), libc::TIOCGWINSZ, &mut seen) },
+            0
+        );
+        assert_eq!((seen.ws_row, seen.ws_col), (24, 80));
+
+        // Kernels before Linux 4.13 use the devpts path fallback instead.
+        let fallback = pty_alloc::open_peer_path(&master).unwrap();
+        assert!(
+            close_on_exec(&fallback),
+            "fallback PTY slave was inheritable"
+        );
+        assert_eq!(descriptor_target(&fallback), peer);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_pty_allocation_failure_releases_the_master() {
+        use std::os::fd::AsRawFd;
+
+        let mut slave = None;
+        let error = pty_alloc::open_pair_with(&test_winsize(), |master| {
+            assert!(close_on_exec(master), "PTY master was inheritable");
+            slave = Some(pty_alloc::open_peer_path(master)?);
+            Err(std::io::Error::from_raw_os_error(libc::EIO))
+        })
+        .unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::EIO));
+        let slave = slave.unwrap();
+        // Only the failed allocation held the master, so closing it hangs up
+        // the slave. A concurrently forked test child can delay that until it
+        // execs, never indefinitely; a leaked master would never hang up.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut ready = libc::pollfd {
+            fd: slave.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let timeout = libc::c_int::try_from(remaining.as_millis()).unwrap_or(libc::c_int::MAX);
+            // SAFETY: `ready` is one valid pollfd for a live descriptor.
+            let count = unsafe { libc::poll(&mut ready, 1, timeout) };
+            if count < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() == Some(libc::EINTR) && !remaining.is_zero() {
+                    continue;
+                }
+                panic!("poll for PTY hangup failed: {error}");
+            }
+            assert_eq!(count, 1, "failed PTY allocation kept its master open");
+            break;
+        }
+        assert_ne!(ready.revents & libc::POLLHUP, 0);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pty_slaves_are_not_retained_by_concurrently_spawned_children() {
+        use std::collections::HashSet;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Mutex;
+
+        // Stop the allocator on every exit from the spawning side, including a
+        // panic, so the scoped join can never wait for it forever.
+        struct StopOnDrop<'a>(&'a AtomicBool);
+        impl Drop for StopOnDrop<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+
+        let stop = AtomicBool::new(false);
+        let allocated = Mutex::new(HashSet::new());
+        let (started, first_allocation) = std::sync::mpsc::sync_channel(1);
+        let inherited = std::thread::scope(|scope| {
+            let _stop = StopOnDrop(&stop);
+            let (stop, allocated) = (&stop, &allocated);
+            scope.spawn(move || {
+                let system = native_pty_system();
+                let mut started = Some(started);
+                while !stop.load(Ordering::Relaxed) {
+                    let pair = system.openpty(PtySize::default()).unwrap();
+                    let name = pair.master.tty_name().expect("PTY slave has a name");
+                    allocated.lock().unwrap().insert(name);
+                    if let Some(started) = started.take() {
+                        let _ = started.send(());
+                    }
+                }
+            });
+            // Spawn only once allocation is underway. If the allocator fails
+            // first, its sender is dropped and the test fails here instead.
+            first_allocation
+                .recv()
+                .expect("PTY allocator failed before its first pair");
+            let mut inherited = Vec::new();
+            for _ in 0..200 {
+                // An ordinary std child, as runtime work and other tests spawn
+                // concurrently, lists the descriptors it kept across exec. A
+                // fixed executable and locale keep the listing deterministic.
+                let output = std::process::Command::new("/bin/ls")
+                    .args(["-l", "/proc/self/fd"])
+                    .env("LC_ALL", "C")
+                    .stdin(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .output()
+                    .unwrap();
+                assert!(output.status.success());
+                inherited.extend(
+                    String::from_utf8_lossy(&output.stdout)
+                        .lines()
+                        .filter_map(|line| line.split_once(" -> "))
+                        .map(|(_, target)| std::path::PathBuf::from(target))
+                        .filter(|target| target.starts_with("/dev/pts/")),
+                );
+            }
+            inherited
+        });
+        let allocated = allocated.into_inner().unwrap();
+        assert!(!allocated.is_empty());
+        let retained: Vec<_> = inherited
+            .iter()
+            .filter(|target| allocated.contains(*target))
+            .collect();
+        assert!(
+            retained.is_empty(),
+            "children kept PTY slaves across exec: {retained:?}"
+        );
     }
 }

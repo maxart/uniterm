@@ -136,12 +136,19 @@ pub(super) fn prepare_socket_parent(sock_path: &Path) -> std::io::Result<()> {
         return Ok(());
     };
     if dir == socket_dir() {
-        if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
+        // Validate the fallback base even when a stale XDG value selected it.
+        // SAFETY: getuid has no preconditions.
+        if dir == fallback_socket_base(unsafe { libc::getuid() }).join("uniterm") {
             if let Some(fallback_base) = dir.parent() {
                 ensure_private_socket_dir(fallback_base)?;
             }
         }
-        ensure_private_socket_dir(dir)
+        ensure_private_socket_dir(dir).map_err(|error| {
+            std::io::Error::new(
+                error.kind(),
+                format!("could not prepare Workspace socket directory {dir:?}: {error}"),
+            )
+        })
     } else {
         std::fs::create_dir_all(dir).map_err(|error| {
             std::io::Error::new(
@@ -173,7 +180,7 @@ pub(super) fn validate_socket_dir(dir: &Path, metadata: &std::fs::Metadata) -> s
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            format!("socket directory {} is not a real directory", dir.display()),
+            format!("socket directory {dir:?} is not a real directory"),
         ));
     }
     // SAFETY: getuid has no preconditions and does not access memory.
@@ -181,10 +188,7 @@ pub(super) fn validate_socket_dir(dir: &Path, metadata: &std::fs::Metadata) -> s
     if metadata.uid() != uid {
         return Err(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
-            format!(
-                "socket directory {} is not owned by this user",
-                dir.display()
-            ),
+            format!("socket directory {dir:?} is not owned by this user"),
         ));
     }
     Ok(())
@@ -290,19 +294,69 @@ pub(super) fn fallback_socket_base(uid: libc::uid_t) -> PathBuf {
     temp.join(format!("uniterm-{uid}"))
 }
 
-/// The directory holding this user's server sockets.
+// Resolve without creating or repairing the session manager's directory.
+// In particular, a stale /run/user/<uid> must not be recursively recreated.
+fn runtime_socket_base(dir: &Path) -> std::io::Result<PathBuf> {
+    use std::os::unix::ffi::OsStrExt as _;
+
+    if !dir.is_absolute() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "runtime path must be absolute and nonempty",
+        ));
+    }
+    let metadata = std::fs::symlink_metadata(dir)?;
+    validate_socket_dir(dir, &metadata)?;
+    if metadata.mode() & 0o022 != 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "runtime directory must not be writable by other users",
+        ));
+    }
+    // The Uniterm child directory is made owner-only at bind. Do not chmod
+    // the session manager's parent, which may also host other applications.
+    let path = std::ffi::CString::new(dir.as_os_str().as_bytes()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "runtime path contains NUL",
+        )
+    })?;
+    // SAFETY: path is a live NUL-terminated string; access does not mutate it.
+    if unsafe { libc::access(path.as_ptr(), libc::W_OK | libc::X_OK) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(dir.to_path_buf())
+}
+
+/// Resolve sockets consistently for launch, attach, and discovery.
 ///
-/// Uniterm uses `$XDG_RUNTIME_DIR/uniterm/` when configured.
-/// Android falls back to Termux's `$TMPDIR` or `$PREFIX/tmp`; other supported
-/// operating systems retain the existing `/tmp/uniterm-<uid>` fallback.
+/// An existing, user-owned, writable `$XDG_RUNTIME_DIR` is preferred.
+/// Missing or unusable session directories use the same private fallback as
+/// an unset variable, with one diagnostic per process and no directory repair.
+/// Android uses Termux's `$TMPDIR` or `$PREFIX/tmp`; other hosts use `/tmp`.
+/// See `docs/INSTALL.md` for the session-directory lifecycle.
 pub fn socket_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            // SAFETY: getuid is always safe.
-            let uid = unsafe { libc::getuid() };
-            fallback_socket_base(uid)
-        });
+    // SAFETY: getuid has no preconditions.
+    let fallback = || fallback_socket_base(unsafe { libc::getuid() });
+    let base = match std::env::var_os("XDG_RUNTIME_DIR") {
+        Some(value) => match runtime_socket_base(Path::new(&value)) {
+            Ok(base) => base,
+            Err(error) => {
+                use std::sync::atomic::{AtomicBool, Ordering};
+                static WARNED: AtomicBool = AtomicBool::new(false);
+                let base = fallback();
+                if !WARNED.swap(true, Ordering::Relaxed) {
+                    // Debug path formatting escapes terminal control bytes.
+                    eprintln!(
+                        "uniterm: ignoring unusable XDG_RUNTIME_DIR={value:?}: {error}; using {:?}",
+                        base.join("uniterm")
+                    );
+                }
+                base
+            }
+        },
+        None => fallback(),
+    };
     base.join("uniterm")
 }
 
@@ -424,6 +478,42 @@ mod tests {
             "uniterm-socket-{label}-{}-{nonce}",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn runtime_base_validation_does_not_create_or_repair_session_directories() {
+        let dir = socket_test_dir("runtime");
+        assert!(runtime_socket_base(&dir).is_err());
+        assert!(!dir.exists());
+        assert!(runtime_socket_base(Path::new("")).is_err());
+        assert!(runtime_socket_base(Path::new("relative/runtime")).is_err());
+
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(runtime_socket_base(&dir).unwrap(), dir);
+        assert!(!dir.join("uniterm").exists());
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(runtime_socket_base(&dir).is_err());
+        assert_eq!(std::fs::metadata(&dir).unwrap().mode() & 0o777, 0o777);
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // SAFETY: getuid has no preconditions.
+        if unsafe { libc::getuid() } != 0 {
+            assert!(runtime_socket_base(Path::new("/")).is_err());
+        }
+        let file = dir.join("file");
+        std::fs::write(&file, b"keep").unwrap();
+        assert!(runtime_socket_base(&file).is_err());
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&dir, &link).unwrap();
+        assert!(runtime_socket_base(&link).is_err());
+        // Root bypasses DAC permissions, so this assertion applies to users.
+        if unsafe { libc::getuid() } != 0 {
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+            assert!(runtime_socket_base(&dir).is_err());
+            assert_eq!(std::fs::metadata(&dir).unwrap().mode() & 0o777, 0o500);
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

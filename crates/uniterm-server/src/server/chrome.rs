@@ -1806,6 +1806,7 @@ impl Server {
             )
             .collect();
         for pid in visible {
+            self.cancel_pane_render(pid);
             if let Some(p) = self.panes.get_mut(&pid) {
                 p.term.grid_mut().clear_damage();
             }
@@ -2044,6 +2045,10 @@ impl Server {
     /// frame, even with no damage at all - typing a space over an already
     /// blank cell changes no cell but does move the cursor.
     pub(super) fn broadcast_pane_damage(&mut self, reg: &Registry, pane_id: PaneId) {
+        self.cancel_pane_render(pane_id);
+        if let Some(pane) = self.panes.get_mut(&pane_id) {
+            pane.output_render.painted(std::time::Instant::now());
+        }
         self.broadcast_direct_pane_damage(reg, pane_id);
         // The overview is a static picker; pane output keeps updating the
         // model silently and repaints when the overview closes.

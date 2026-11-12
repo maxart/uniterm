@@ -1,6 +1,13 @@
 # Workspace permission automation
 
-The mode is off by default and resets when the Workspace server restarts unless **Keep auto-approve on restart** is explicitly enabled in Workspace Settings.
+**Settings > Agents > Auto-trust Project directories** (`auto-trust-projects = true`) defaults ON and is independent of tool Auto-approve and Pane delegation.
+It accepts a complete recognized trust dialog only when its displayed absolute directory exactly matches the owning Project root.
+The setting persists in machine configuration; changes apply immediately in the current Workspace and are shared by attached clients.
+Paths with missing, ambiguous, truncated, parent, unrelated, relative, or differently spelled roots remain manual, including symlink aliases and pathless native dialogs.
+No filesystem resolution is performed on the terminal output path.
+It still requires a bundled provider identity, current invocation, kernel-confirmed PTY ownership, healthy event history, and an exact affirmative and negative dialog contract.
+
+General permission automation is off by default and resets when the Workspace server restarts unless **Keep auto-approve on restart** is explicitly enabled in Workspace Settings.
 Enable it only when the human authorizes automatic acceptance of recognized permission requests across that Workspace, including requests with destructive effects.
 
 ## Controls
@@ -61,6 +68,8 @@ The Observatory marks armed Panes, and `ut delegate status` / `ut delegate expla
 
 Automation acts only on a known current agent invocation with kernel-confirmed ownership of the PTY.
 It recognizes complete permission dialogs directly on output or identity discovery, without waiting for the status dwell used by notifications and the waiting queue.
+Directory trust uses its own setting and Project scope even when Auto-approve is ON; tool permissions require Auto-approve, a live Pane delegation, or an explicit waiting action.
+Explicit waiting approval can still accept a reviewed trust dialog when automatic trust is disabled or its directory cannot be established.
 Enabling the mode also inspects already-visible dialogs, including agents that have not reached `Permission` status.
 Manual `waiting approve` still targets an existing permission item and shares recognition and delivery with automatic approval.
 Local detection manifests cannot grant input authority.
@@ -96,7 +105,8 @@ Terminal text is heuristic evidence, not an authenticated approval API, so provi
 Pure opt-in and deduplication state lives in `uniterm-core::approval`.
 Provider recognition lives under `uniterm-server::providers`; the core server revalidates the PTY and delivers input.
 There is no polling, external scraper, retry timer, subprocess, or idle wakeup.
-Disabled mode checks only whether an explicitly requested manual navigation is pending on actual output events.
+With general mode disabled, actual output is inspected for trust only when Auto-trust Project directories is ON, or to continue explicitly requested manual navigation.
+When both settings are OFF and no manual navigation is pending, approval recognition does no work.
 Status changes inspect a live dialog only when a previous delivery needs progress validation.
 Enabled mode samples a known agent only on output, identity/status transition, or explicit enable.
 

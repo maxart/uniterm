@@ -31,7 +31,7 @@ These pages describe the product as shipped, for people using it rather than des
 | [USAGE.md](USAGE.md) | The command line, keys, mouse, menus, the Observatory, file manager, Workspaces and Projects, Settings |
 | [CONFIGURATION.md](CONFIGURATION.md) | The config file, themes, and provider detection manifests |
 | [FEATURES.md](FEATURES.md) | The complete feature list |
-| [BENCHMARKS.md](BENCHMARKS.md) | Uniterm v1.0.4 vs Herdr stable v0.8.2 vs tmux 3.7c, plus the v1.0.3 and v1.0.0 archives, raw evidence, setup, and limits |
+| [BENCHMARKS.md](BENCHMARKS.md) | Measured Uniterm development commit vs Herdr stable 0.9.5 and tmux 3.8, with raw evidence, reproduction, limits, and earlier campaigns |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Building, testing, and the repository layout |
 
 ## Reading order

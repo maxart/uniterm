@@ -544,6 +544,8 @@ pub struct Config {
     pub auto_install_connectors: bool,
     /// Keep each Workspace's last explicit approval mode across server restarts.
     pub persist_auto_approve: bool,
+    /// Accept directory trust only for the owning Project root, separately from tools.
+    pub auto_trust_projects: bool,
     /// Event-driven outer terminal title template. Empty disables updates.
     pub window_title: String,
     /// Derive unnamed Tab labels from observed task summaries or terminal context.
@@ -605,6 +607,7 @@ impl Default for Config {
             auto_update_connectors: true,
             auto_install_connectors: true,
             persist_auto_approve: false,
+            auto_trust_projects: true,
             window_title: "{hostname}: {workspace}".into(),
             auto_tab_names: false,
             auto_track_tasks: true,
@@ -712,6 +715,7 @@ impl Config {
                     }
                 }
                 "window-title" => c.window_title = val.to_string(),
+                "auto-trust-projects" => set_bool(&mut c.auto_trust_projects, val),
                 "persist-auto-approve" => set_bool(&mut c.persist_auto_approve, val),
                 "auto-track-tasks" => set_bool(&mut c.auto_track_tasks, val),
                 "auto-tab-names" => set_bool(&mut c.auto_tab_names, val),
@@ -853,6 +857,7 @@ impl Config {
                 | "restore"
                 | "auto-update-connectors"
                 | "auto-install-connectors"
+                | "auto-trust-projects"
                 | "persist-auto-approve"
                 | "auto-track-tasks"
                 | "auto-tab-names"
@@ -1012,6 +1017,7 @@ impl Config {
                 | "focus-follows-mouse"
                 | "confirm-close"
                 | "confirm-tab-close"
+                | "auto-trust-projects"
                 | "persist-auto-approve"
                 | "auto-track-tasks"
                 | "auto-tab-names"
@@ -1066,6 +1072,7 @@ notification-sound-file = {}\n\
 focus-follows-mouse = {}\n\
 confirm-close = {}\n\
 confirm-tab-close = {}\n\
+auto-trust-projects = {}\n\
 persist-auto-approve = {}\n\
 auto-track-tasks = {}\n\
 auto-tab-names = {}\n\
@@ -1106,6 +1113,7 @@ editor = {}\n",
             bool_name(self.focus_follows_mouse),
             bool_name(self.confirm_close),
             bool_name(self.confirm_tab_close),
+            bool_name(self.auto_trust_projects),
             bool_name(self.persist_auto_approve),
             bool_name(self.auto_track_tasks),
             bool_name(self.auto_tab_names),
@@ -1791,6 +1799,26 @@ guardrail-allowed-project = \n";
         assert_eq!(
             Config::parse("status-position = bottom\n").status_position,
             StatusPosition::Bottom
+        );
+    }
+
+    #[test]
+    fn project_trust_defaults_on_roundtrips_and_validates_independently() {
+        assert!(Config::default().auto_trust_projects);
+        for enabled in [true, false] {
+            let text = format!("auto-trust-projects = {enabled}\n");
+            assert!(Config::diagnostics(&text).is_empty());
+            let config = Config::parse(&text);
+            assert_eq!(config.auto_trust_projects, enabled);
+            assert!(!config.persist_auto_approve);
+            assert_eq!(
+                Config::parse(&config.to_text()).auto_trust_projects,
+                enabled
+            );
+        }
+        assert_eq!(
+            Config::diagnostics("auto-trust-projects = maybe\n").len(),
+            1
         );
     }
 

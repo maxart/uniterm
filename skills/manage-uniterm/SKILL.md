@@ -201,7 +201,10 @@ For permission, inspect the requested operation and use `ut waiting answer ID TE
 `ut waiting approve ID` accepts only a recognized live one-time permission choice using the same invocation guard.
 `ut agent auto-approve status [-w Workspace]` reports the human-controlled Workspace mode.
 Both on and off apply immediately, without a second confirmation.
-Recognized folder trust and tool permission dialogs are handled on output, before the status notification dwell.
+Directory trust has a separate default-ON **Settings > Agents > Auto-trust Project directories** setting (`auto-trust-projects`).
+Only complete dialogs showing the exact owning Project root qualify; unknown, parent and unrelated paths stay manual.
+Tool permissions use Auto-approve or explicit Pane delegation; neither overrides the trust setting.
+Recognized dialogs are handled on output, before the status notification dwell.
 Enable with `ut agent auto-approve on` only when the human explicitly requested automatic permission acceptance across that Workspace; `off` disables it.
 The mode defaults off and never answers questions or unknown dialogs.
 By default it resets on server restart.

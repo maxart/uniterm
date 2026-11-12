@@ -1,0 +1,109 @@
+metric,unit,classification,contender,median,min,max
+server_startup_ready,ms,core,uniterm,4.575595,4.489466999999999,4.605653
+server_startup_ready,ms,core,herdr,22.4021845,22.319356499999998,22.5525885
+server_startup_ready,ms,core,tmux,6.328666,6.295685000000001,6.391669
+control_command_latency,ms,core,uniterm,0.3822565,0.3733805,0.3905175
+control_command_latency,ms,core,herdr,0.823375,0.809439,0.8870495
+control_command_latency,ms,core,tmux,0.5295445000000001,0.525557,0.5419579999999999
+daemon_idle_cohort_cpu,% core,core,uniterm,0.0,0.0,0.0
+daemon_idle_cohort_cpu,% core,core,herdr,0.1633252873161215,0.16332445171262902,0.1899886557267029
+daemon_idle_cohort_cpu,% core,core,tmux,0.0,0.0,0.0
+daemon_idle_cohort_rss,KiB,core,uniterm,14908.0,14656.0,15072.0
+daemon_idle_cohort_rss,KiB,core,herdr,30752.0,30568.0,30828.0
+daemon_idle_cohort_rss,KiB,core,tmux,9232.0,9168.0,9368.0
+foreground_idle_cohort_cpu,% core,core,uniterm,0.0,0.0,0.0
+foreground_idle_cohort_cpu,% core,core,herdr,0.5299717397251208,0.5299672692673805,0.6399616019924323
+foreground_idle_cohort_cpu,% core,core,tmux,0.003333141862498954,0.0,0.0033331609539926327
+foreground_idle_cohort_rss,KiB,core,uniterm,22928.0,22840.0,23384.0
+foreground_idle_cohort_rss,KiB,core,herdr,52328.0,52284.0,54368.0
+foreground_idle_cohort_rss,KiB,core,tmux,13524.0,13456.0,13712.0
+terminal_input_to_visible,ms,core,uniterm,2.1092725,2.1061,2.1166255000000005
+terminal_input_to_visible,ms,core,herdr,2.4447465,2.151837,4.1421465
+terminal_input_to_visible,ms,core,tmux,2.1764550000000003,2.1464625,2.393439
+terminal_output_completion,ms,core,uniterm,163.253577,161.4732975,167.0927485
+terminal_output_completion,ms,core,herdr,173.23192450000002,173.09933,174.94832200000002
+terminal_output_completion,ms,core,tmux,225.691324,224.196533,227.5853925
+binary_size,bytes,context,uniterm,11372840.0,11372840.0,11372840.0
+binary_size,bytes,context,herdr,31071152.0,31071152.0,31071152.0
+binary_size,bytes,context,tmux,2329608.0,2329608.0,2329608.0
+client_render_output,bytes,context,uniterm,89149.0,89149.0,89157.5
+client_render_output,bytes,context,herdr,29101.0,28778.0,29213.0
+client_render_output,bytes,context,tmux,826058.5,767924.0,852687.0
+daemon_idle_root_cpu,% core,context,uniterm,0.0,0.0,0.0
+daemon_idle_root_cpu,% core,context,herdr,0.1633252873161215,0.16332445171262902,0.1899886557267029
+daemon_idle_root_cpu,% core,context,tmux,0.0,0.0,0.0
+daemon_idle_root_rss,KiB,context,uniterm,10696.0,10512.0,10708.0
+daemon_idle_root_rss,KiB,context,herdr,26516.0,26372.0,26556.0
+daemon_idle_root_rss,KiB,context,tmux,5092.0,5088.0,5228.0
+foreground_idle_root_cpu,% core,context,uniterm,0.0,0.0,0.0
+foreground_idle_root_cpu,% core,context,herdr,0.5299717397251208,0.5299672692673807,0.6399616019924325
+foreground_idle_root_cpu,% core,context,tmux,0.003333141862498954,0.0,0.00333316095399263
+foreground_idle_root_rss,KiB,context,uniterm,18696.0,18664.0,18976.0
+foreground_idle_root_rss,KiB,context,herdr,48100.0,48056.0,50024.0
+foreground_idle_root_rss,KiB,context,tmux,9412.0,9284.0,9540.0
+isolated_state_size,bytes,context,uniterm,1807688.0,1807688.0,1807688.0
+isolated_state_size,bytes,context,herdr,5552.0,5552.0,5552.0
+isolated_state_size,bytes,context,tmux,0.0,0.0,0.0
+live_suite_shutdown,ms,context,uniterm,37.613468999999995,31.957560000000004,38.767951000000004
+live_suite_shutdown,ms,context,herdr,308.166892,307.936982,309.624779
+live_suite_shutdown,ms,context,tmux,16.649278,16.195749,17.846257
+multiclient_3_idle_cohort_cpu,% core,context,uniterm,0.0,0.0,0.0
+multiclient_3_idle_cohort_cpu,% core,context,herdr,1.276591454357735,1.1199417298013792,1.2965913888007699
+multiclient_3_idle_cohort_cpu,% core,context,tmux,0.0033331405046332935,0.0033331254995925983,0.006666275075114054
+multiclient_3_idle_cohort_rss,KiB,context,uniterm,37364.0,37200.0,37616.0
+multiclient_3_idle_cohort_rss,KiB,context,herdr,96472.0,96032.0,101592.0
+multiclient_3_idle_cohort_rss,KiB,context,tmux,22348.0,22328.0,22564.0
+multiclient_3_idle_root_cpu,% core,context,uniterm,0.0,0.0,0.0
+multiclient_3_idle_root_cpu,% core,context,herdr,1.2765914543577355,1.1199417298013792,1.29659138880077
+multiclient_3_idle_root_cpu,% core,context,tmux,0.0033331405046332935,0.0033331254995925983,0.006666275075114053
+multiclient_3_idle_root_rss,KiB,context,uniterm,33096.0,33008.0,33264.0
+multiclient_3_idle_root_rss,KiB,context,herdr,92364.0,91924.0,97416.0
+multiclient_3_idle_root_rss,KiB,context,tmux,18288.0,18120.0,18392.0
+multiclient_3_input_to_visible,ms,context,uniterm,2.1170020000000003,2.1097265,2.117432
+multiclient_3_input_to_visible,ms,context,herdr,4.196695,2.1496934999999997,4.208206000000001
+multiclient_3_input_to_visible,ms,context,tmux,2.1658945,2.1382075,2.1757869999999997
+multipane_16_idle_cohort_cpu,% core,context,uniterm,0.0,0.0,0.0
+multipane_16_idle_cohort_cpu,% core,context,herdr,1.2099287921979183,1.199937655719176,1.4432761526517224
+multipane_16_idle_cohort_cpu,% core,context,tmux,0.0033331205713478325,0.0,0.0033331408775346353
+multipane_16_idle_cohort_rss,KiB,context,uniterm,87348.0,87140.0,87576.0
+multipane_16_idle_cohort_rss,KiB,context,herdr,120328.0,119816.0,120788.0
+multipane_16_idle_cohort_rss,KiB,context,tmux,76312.0,76296.0,76452.0
+multipane_16_idle_root_cpu,% core,context,uniterm,0.0,0.0,0.0
+multipane_16_idle_root_cpu,% core,context,herdr,1.2099287921979183,1.199937655719176,1.4432761526517224
+multipane_16_idle_root_cpu,% core,context,tmux,0.0033331205713478325,0.0,0.0033331408775346353
+multipane_16_idle_root_rss,KiB,context,uniterm,20836.0,20268.0,20932.0
+multipane_16_idle_root_rss,KiB,context,herdr,53332.0,53052.0,53452.0
+multipane_16_idle_root_rss,KiB,context,tmux,9460.0,9408.0,9596.0
+multipane_process_count,processes,context,uniterm,18.0,18.0,18.0
+multipane_process_count,processes,context,herdr,18.0,18.0,18.0
+multipane_process_count,processes,context,tmux,18.0,18.0,18.0
+multipane_suite_shutdown,ms,context,uniterm,37.083218,33.963899,37.865785
+multipane_suite_shutdown,ms,context,herdr,308.71714000000003,308.215173,309.19703100000004
+multipane_suite_shutdown,ms,context,tmux,16.011789,12.860082,16.37041
+pane_close_recovery,%,context,uniterm,95.92401327923275,95.78612114901696,96.40575079872204
+pane_close_recovery,%,context,herdr,93.49912229373902,93.3933933933934,93.60498672515295
+pane_close_recovery,%,context,tmux,99.84697781178271,99.84119926316458,99.84763839512442
+pane_close_rss,KiB,context,uniterm,24936.0,24376.0,25020.0
+pane_close_rss,KiB,context,herdr,55900.0,55640.0,55916.0
+pane_close_rss,KiB,context,tmux,13540.0,13424.0,13672.0
+pane_memory_slope,KiB/pane,context,uniterm,4331.0,4327.082352941176,4373.970588235294
+pane_memory_slope,KiB/pane,context,herdr,4463.988235294118,4424.929411764706,4468.10294117647
+pane_memory_slope,KiB/pane,context,tmux,4195.2,4177.835294117647,4208.270588235294
+resize_storm_cpu,ms CPU,context,uniterm,20.000000000000462,19.999999999999574,30.00000000000025
+resize_storm_cpu,ms CPU,context,herdr,49.99999999999982,30.00000000000025,50.00000000000071
+resize_storm_cpu,ms CPU,context,tmux,10.000000000000231,0.0,10.000000000000231
+resize_storm_rss,KiB,context,uniterm,47304.0,47208.0,47676.0
+resize_storm_rss,KiB,context,herdr,63092.0,63084.0,64416.0
+resize_storm_rss,KiB,context,tmux,14488.0,14380.0,14696.0
+resize_storm_settle,ms,context,uniterm,10.96875,9.601412999999999,11.138786
+resize_storm_settle,ms,context,herdr,212.93901300000002,212.237464,214.888331
+resize_storm_settle,ms,context,tmux,209.518573,205.65371499999998,210.579421
+restart_ready,ms,context,uniterm,5.309031,4.913026,5.420191
+restart_ready,ms,context,herdr,22.395244,22.102336,22.436075
+restart_ready,ms,context,tmux,7.497527000000001,6.981894,7.6547719999999995
+server_shutdown,ms,context,uniterm,30.921401,29.3086075,32.0881665
+server_shutdown,ms,context,herdr,306.18194800000003,305.9008295,308.02198250000004
+server_shutdown,ms,context,tmux,12.198528,10.6750755,12.340633500000001
+terminal_output_ingest_rate,MiB/s,context,uniterm,21.030261903391597,20.551546944440396,21.26191543152717
+terminal_output_ingest_rate,MiB/s,context,herdr,19.819046090796952,19.62423819203766,19.83385926534001
+terminal_output_ingest_rate,MiB/s,context,tmux,15.212136459262949,15.085948787048583,15.313500119310032

@@ -167,9 +167,9 @@ Gemini reports typed tool-permission notifications, Grok distinguishes permissio
 Claude and Cursor hooks stay silent when Grok imports them; Grok uses its own connector to preserve provider identity.
 Connectors install and update automatically by default at startup and after upgrading Uniterm.
 Use `ut agent connector install all` for an immediate manual refresh, then restart the affected agent sessions.
-For OpenCode, installation probes the installed CLI version: v1 uses `plugins/uniterm-notify.ts`; v2 uses `plugins/uniterm-notify/index.ts` and `tui.ts`.
+OpenCode registers `./uniterm-notify` in its effective global `plugin` list, preserving user entries, and installs a separate local v2 TUI hook.
+Ordinary setup supports both majors without a CLI version probe; immutable configs retain version-specific setup, refreshed when the config or executable changes.
 OpenCode 2 status comes from the local TUI's selected session and pending prompts, including blocked children, because its shared server does not own the Pane terminal.
-Reinstall the OpenCode connector after switching between OpenCode major versions.
 
 Today session identity comes from provider metadata, never from a guessed working-directory match.
 Refresh an existing integration with `ut agent connector install AGENT`, then start or resume the harness to load its updated hooks.
@@ -455,7 +455,11 @@ There is no background polling, and already-running agents load changed hooks wh
 `ut agent connector auto-update` runs the same check and honors both saved preferences.
 **Install all connectors** remains available for an immediate manual install or refresh.
 
-Permission automation is off by default.
+**Settings > Agents > Auto-trust Project directories** defaults ON (`auto-trust-projects = true`).
+It accepts complete recognized trust dialogs only when the displayed absolute directory exactly matches the owning Project root.
+Missing, ambiguous, parent, unrelated, truncated or differently spelled paths stay manual.
+Every attached client shares this independent setting; disabling it prevents automatic directory trust even when Auto-approve is ON.
+Ordinary permission automation is off by default.
 Select **Auto-approve** in either Settings or Agents Config.
 The page places an explicit **on / off** selector above a separate explanation.
 Select **on** to enable it immediately for this Workspace; select **off** to disable it.
@@ -467,7 +471,8 @@ To retain your choice, enable **Workspace > Settings > Agents > Keep auto-approv
 This preference alone never enables Auto-approve.
 Once explicitly ON, it stays ON across clean restarts and crashes until turned OFF; OFF is also saved per Workspace.
 Turning the preference off leaves the live mode unchanged and resets it OFF at the next restart.
-Recognized permission and folder trust choices are accepted on live output, without waiting for status notification dwell, including destructive command requests.
+Recognized choices are accepted on live output, without waiting for status notification dwell.
+Project trust follows its own setting; destructive command requests and other tool permissions still require explicit permission automation or a reviewed waiting action.
 Questions and unknown dialogs remain waiting.
 `ut waiting approve ID` uses the same recognition path for one reviewed permission item.
 See [permission automation](28-permission-automation.md) for dialog coverage, deduplication, audit, and limitations.

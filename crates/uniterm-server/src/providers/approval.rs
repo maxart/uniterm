@@ -8,12 +8,28 @@ use std::hash::{Hash, Hasher};
 pub(crate) struct Approval {
     pub fingerprint: u64,
     pub keys: Vec<u8>,
+    /// Which automatic policy, if any, may authorize this complete dialog.
+    pub kind: ApprovalKind,
+    /// Exact, untruncated absolute directory shown by a complete trust dialog.
+    pub directory: Option<String>,
     /// Selected-row identity for a navigation step; None submits the choice.
     pub navigation: Option<u64>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ApprovalKind {
+    /// An ordinary tool or command permission.
+    Permission,
+    /// The current Uniterm Project's directory trust prompt.
+    WorkspaceTrust,
+}
+
 fn content(line: &str) -> &str {
-    line.trim().trim_matches(['│', '┃']).trim()
+    line.trim()
+        .trim_matches([
+            '│', '┃', '╭', '╮', '╰', '╯', '┌', '┐', '└', '┘', '┏', '┓', '┗', '┛', '─', '━',
+        ])
+        .trim()
 }
 
 fn option(line: &str) -> (&str, bool) {
@@ -30,14 +46,117 @@ fn option(line: &str) -> (&str, bool) {
     (line, selected)
 }
 
+fn choice_matches(label: &str, choices: &[&str]) -> bool {
+    choices.iter().any(|choice| {
+        choice
+            .strip_suffix('*')
+            .map_or(label == *choice, |prefix| label.starts_with(prefix))
+    })
+}
+
 /// One provider-owned dialog contract, independent of the status dwell rules.
 pub(super) struct Dialog {
     pub headings: &'static [&'static str],
     pub allow: &'static [&'static str],
     pub deny: &'static [&'static str],
+    /// Visible choices that may be crossed but are never authorized.
+    pub alternatives: &'static [&'static str],
+    pub kind: ApprovalKind,
 }
 
+const WORKSPACE_TRUST: Dialog = Dialog {
+    headings: &[
+        "trust this folder?",
+        "trust this workspace?",
+        "do you trust this folder?",
+        "do you trust this workspace?",
+        "do you trust the files in this folder?",
+        "do you trust the contents of this directory?",
+        "do you trust the authors of the files in this folder?",
+        "accessing workspace:",
+        "quick safety check:",
+        "project trust",
+    ],
+    allow: &[
+        "trust",
+        "trust and continue",
+        "trust folder (*",
+        "trust this workspace",
+        "trust (this session only)",
+        "yes, continue",
+        "yes, i trust this folder",
+        "yes, trust this folder",
+        "yes, trust this workspace",
+    ],
+    deny: &[
+        "back to agent command center",
+        "quit",
+        "no, quit",
+        "no, exit",
+        "no, continue without these permissions",
+        "don't trust",
+        "do not trust",
+        "do not trust (this session only)",
+    ],
+    alternatives: &["trust parent folder (*"],
+    kind: ApprovalKind::WorkspaceTrust,
+};
+
 pub(super) fn recognize(provider: &str, screen: &str) -> Option<Approval> {
+    let mut approval = recognize_dialog(provider, screen)?;
+    if approval.kind == ApprovalKind::WorkspaceTrust {
+        approval.directory = trust_directory(screen);
+    }
+    Some(approval)
+}
+
+// A path must immediately follow its dialog heading. Never infer it from cwd,
+// a basename, a parent-folder option, or text printed before the dialog.
+fn trust_directory(screen: &str) -> Option<String> {
+    let lines: Vec<_> = screen
+        .lines()
+        .map(content)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let mut directory = None;
+    let mut folder_access = false;
+    let mut awaiting_path = false;
+    for line in lines {
+        let lower = line.to_lowercase();
+        let heading = lower == "folder access"
+            || WORKSPACE_TRUST
+                .headings
+                .iter()
+                .any(|heading| lower.starts_with(heading));
+        if heading {
+            // Codex and Claude put explanatory subheadings after the path.
+            if (folder_access && lower.starts_with("trust this folder?"))
+                || (directory.is_some() && lower.starts_with("quick safety check:"))
+            {
+                folder_access = false;
+                continue;
+            }
+            directory = None;
+            folder_access = lower == "folder access";
+            awaiting_path = true;
+        } else if awaiting_path {
+            awaiting_path = false;
+            if line.starts_with('/')
+                && !line.contains(['…', '\t'])
+                && !line.contains("...")
+                && !line.split('/').any(|part| part == "." || part == "..")
+            {
+                directory = Some(line.to_string());
+            }
+        } else if line.starts_with('/') {
+            // Multiple standalone paths cannot identify one trust target.
+            directory = None;
+        }
+    }
+    directory
+}
+
+fn recognize_dialog(provider: &str, screen: &str) -> Option<Approval> {
     let manifest = super::launch_manifest(provider)?;
     let lower = screen.to_lowercase();
     // Policy failures are not interactive requests for approval.
@@ -58,6 +177,11 @@ pub(super) fn recognize(provider: &str, screen: &str) -> Option<Approval> {
         if let Some(choice) = super::grok::approval(screen) {
             return Some(choice);
         }
+    }
+    // A Uniterm Project is already an explicit directory trust decision. Use
+    // one strict contract for every bundled provider and executable alias.
+    if let Some(choice) = selected_dialog(&lower, &WORKSPACE_TRUST) {
+        return Some(choice);
     }
     let dialogs = super::approval_dialogs(manifest.id);
     for dialog in dialogs {
@@ -102,11 +226,20 @@ pub(super) fn recognize(provider: &str, screen: &str) -> Option<Approval> {
             "allow once",
         ],
         &["no", "no (esc)", "deny", "reject", "reject once"],
+        &[],
     )
 }
 
 fn selected_dialog(screen: &str, dialog: &Dialog) -> Option<Approval> {
-    selected_choices(screen, dialog.headings, dialog.allow, dialog.deny)
+    let mut choice = selected_choices(
+        screen,
+        dialog.headings,
+        dialog.allow,
+        dialog.deny,
+        dialog.alternatives,
+    )?;
+    choice.kind = dialog.kind;
+    Some(choice)
 }
 
 fn selected_choices(
@@ -114,6 +247,7 @@ fn selected_choices(
     headings: &[&str],
     allow: &[&str],
     deny: &[&str],
+    alternatives: &[&str],
 ) -> Option<Approval> {
     let lines: Vec<_> = screen.lines().collect();
     // Use the newest heading; an earlier completed dialog is not authority.
@@ -126,14 +260,14 @@ fn selected_choices(
         .iter()
         .enumerate()
         .skip(header + 1)
-        .find_map(|(index, line)| allow.contains(&option(line).0).then_some(index))?;
+        .find_map(|(index, line)| choice_matches(option(line).0, allow).then_some(index))?;
     let denial = lines
         .iter()
         .enumerate()
         .skip(header + 1)
         .find_map(|(index, line)| {
             let (label, _) = option(line);
-            (deny.contains(&label) || label.starts_with("no, ")).then_some(index)
+            (choice_matches(label, deny) || label.starts_with("no, ")).then_some(index)
         })?;
     let selected: Vec<_> = lines
         .iter()
@@ -146,8 +280,9 @@ fn selected_choices(
         return None;
     };
     let label = option(lines[*selected]).0;
-    if !allow.contains(&label)
-        && !deny.contains(&label)
+    if !choice_matches(label, allow)
+        && !choice_matches(label, deny)
+        && !choice_matches(label, alternatives)
         && !label.starts_with("no, ")
         && !label.starts_with("yes, ")
         && label != "allow always"
@@ -173,8 +308,9 @@ fn selected_choices(
             .iter()
             .filter(|line| {
                 let (label, _) = option(line);
-                allow.contains(&label)
-                    || deny.contains(&label)
+                choice_matches(label, allow)
+                    || choice_matches(label, deny)
+                    || choice_matches(label, alternatives)
                     || label.starts_with("no, ")
                     || label.starts_with("yes, ")
                     || label == "allow always"
@@ -210,6 +346,8 @@ pub(super) fn fingerprint(lines: &[&str], keys: &'static [u8]) -> Approval {
     Approval {
         fingerprint: hash.finish(),
         keys: keys.to_vec(),
+        kind: ApprovalKind::Permission,
+        directory: None,
         navigation: None,
     }
 }
@@ -222,7 +360,9 @@ mod tests {
 
     #[test]
     fn recognizes_only_selected_one_time_permission_choices() {
-        assert_eq!(recognize("codex", PROMPT).unwrap().keys, b"\r");
+        let permission = recognize("codex", PROMPT).unwrap();
+        assert_eq!(permission.keys, b"\r");
+        assert_eq!(permission.kind, ApprovalKind::Permission);
         assert!(recognize("custom", PROMPT).is_none());
         for replacement in [
             "1. Yes, proceed (y)",
@@ -250,6 +390,70 @@ mod tests {
             &PROMPT.replace("3. No, and tell Codex what to do differently (esc)", "")
         )
         .is_none());
+    }
+
+    #[test]
+    fn complete_workspace_trust_is_shared_by_every_bundled_agent_and_alias() {
+        let screens = [
+            "Trust this workspace?\n/work\n❯ Yes, trust this workspace\nNo, exit\nEnter to confirm · Esc to cancel",
+            "╭─ Do you trust the files in this folder? ─╮\n│ ● Trust folder (work) │\n│ ○ Trust parent folder (home) │\n│ ○ Don't trust │\n│ (Use Enter to select, Esc to close) │\n╰────────────────────────╯",
+        ];
+        for manifest in super::super::BUILT_INS {
+            for provider in std::iter::once(manifest.id).chain(manifest.executables.iter().copied())
+            {
+                for screen in screens {
+                    let approval = recognize(provider, screen).unwrap_or_else(|| {
+                        panic!("workspace trust was not recognized for {provider}: {screen}")
+                    });
+                    assert_eq!(approval.kind, ApprovalKind::WorkspaceTrust, "{provider}");
+                    assert_eq!(approval.keys, b"\r", "{provider}");
+                }
+            }
+        }
+        assert!(recognize("custom-agent", screens[0]).is_none());
+    }
+
+    #[test]
+    fn trust_directory_requires_complete_absolute_case_preserved_scope() {
+        for provider in super::super::BUILT_INS {
+            for path in ["/Work/Project", "/unrelated", "/", "/Work/Project/subdir"] {
+                let screen = format!("Trust this workspace?\n{path}\n❯ Yes, trust this workspace\nNo, exit\nEnter to confirm · Esc to cancel");
+                assert_eq!(
+                    recognize(provider.id, &screen)
+                        .unwrap()
+                        .directory
+                        .as_deref(),
+                    Some(path)
+                );
+            }
+        }
+        for path in [
+            "",
+            "project",
+            "~/project",
+            "/work/../other",
+            "/work/./project",
+            "/work/…",
+            "/work/...",
+        ] {
+            let screen = format!("Trust this workspace?\n{path}\n❯ Yes, trust this workspace\nNo, exit\nEnter to confirm · Esc to cancel");
+            assert!(
+                recognize("codex", &screen).unwrap().directory.is_none(),
+                "{path}"
+            );
+        }
+        assert_eq!(
+            trust_directory("Folder access\n/Work/Project\nTrust this folder? Details"),
+            Some("/Work/Project".into())
+        );
+        assert_eq!(
+            trust_directory("Accessing workspace:\n/Work/Project\nQuick safety check: Details"),
+            Some("/Work/Project".into())
+        );
+        assert_eq!(
+            trust_directory("Trust this workspace?\n/old\nTrust this workspace?\nUnknown"),
+            None
+        );
     }
 
     #[test]
@@ -424,7 +628,9 @@ mod tests {
             "../../tests/fixtures/approval/grok-trust-live.ansi"
         ));
         for provider in ["grok", "agent"] {
-            assert_eq!(recognize(provider, screen).unwrap().keys, b"y");
+            let approval = recognize(provider, screen).unwrap();
+            assert_eq!(approval.keys, b"y");
+            assert_eq!(approval.kind, ApprovalKind::WorkspaceTrust);
             assert_eq!(
                 super::super::permission_approval(provider, &terminal)
                     .unwrap_or_else(|| panic!("{}", terminal.evidence_text(48)))

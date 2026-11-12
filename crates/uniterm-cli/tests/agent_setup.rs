@@ -128,21 +128,14 @@ fn bundled_monitoring_skill_explains_stacks_and_blockers() {
 }
 
 #[test]
-fn opencode_install_selects_cli_contract_and_preserves_files_on_probe_failure() {
+fn opencode_install_supports_both_loaders_without_executing_the_cli() {
     let state = common::isolate_state();
     let root = common::temp_dir("opencode-contract");
     let bin = root.join("bin");
     let config = root.join("config");
     std::fs::create_dir_all(&bin).unwrap();
     let executable = bin.join("opencode");
-    let set_version = |version: &str| {
-        std::fs::write(
-            &executable,
-            format!("#!/bin/sh\nprintf '%s\\n' '{version}'\n"),
-        )
-        .unwrap();
-        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
-    };
+    let probe = root.join("unexpected-probe");
     let install = || {
         Command::new(env!("CARGO_BIN_EXE_ut"))
             .args(["agent", "connector", "install", "opencode"])
@@ -151,29 +144,53 @@ fn opencode_install_selects_cli_contract_and_preserves_files_on_probe_failure() 
             .env("XDG_STATE_HOME", &state)
             .env("XDG_RUNTIME_DIR", root.join("runtime"))
             .env("PATH", &bin)
+            .env("PROBE_FILE", &probe)
             .output()
             .unwrap()
     };
-    let plugins = config.join("opencode/plugins");
-    let legacy = plugins.join("uniterm-notify.ts");
-    let modern = plugins.join("uniterm-notify");
-    set_version("1.2.27");
-    assert!(install().status.success());
-    assert!(std::fs::read_to_string(&legacy)
-        .unwrap()
-        .contains("export const UnitermNotify"));
-    set_version("opencode v2.0.26");
-    assert!(install().status.success());
-    assert!(!legacy.exists());
-    let installed = std::fs::read(modern.join("tui.ts")).unwrap();
-    assert!(modern.join("index.ts").exists());
-    set_version("unrecognized");
+    let index = config.join("opencode/uniterm-notify/index.ts");
+    let server = config.join("opencode/uniterm-notify/server.ts");
+    let tui = config.join("opencode/plugins/uniterm-notify/tui.ts");
+    for version in ["1.2.27", "opencode v2.0.26"] {
+        std::fs::write(
+            &executable,
+            format!("#!/bin/sh\nprintf called > \"$PROBE_FILE\"\nprintf '%s\\n' '{version}'\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let result = install();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(!probe.exists());
+        assert!(std::fs::read_to_string(&index)
+            .unwrap()
+            .contains("export const UnitermNotify"));
+        assert!(std::fs::read_to_string(&server)
+            .unwrap()
+            .contains("export default { id:"));
+        assert!(tui.exists());
+        assert!(!config.join("opencode/plugins/uniterm-notify.ts").exists());
+        assert!(!config
+            .join("opencode/plugins/uniterm-notify/index.ts")
+            .exists());
+    }
+    let before: Vec<_> = [&index, &server, &tui]
+        .into_iter()
+        .map(|path| std::fs::read(path).unwrap())
+        .collect();
+    let configuration = config.join("opencode/opencode.json");
+    std::fs::write(&configuration, "{ broken configuration").unwrap();
     assert!(!install().status.success());
-    assert_eq!(std::fs::read(modern.join("tui.ts")).unwrap(), installed);
-    assert!(!legacy.exists());
-    set_version("1.2.27");
-    assert!(install().status.success());
-    assert!(legacy.exists());
-    assert!(!modern.exists());
+    for (path, bytes) in [&index, &server, &tui].into_iter().zip(before) {
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+    assert_eq!(
+        std::fs::read_to_string(configuration).unwrap(),
+        "{ broken configuration"
+    );
+    assert!(!probe.exists());
     std::fs::remove_dir_all(root).unwrap();
 }

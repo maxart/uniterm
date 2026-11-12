@@ -2507,6 +2507,8 @@ pub struct SettingsPatch {
     pub editor_rules: Option<String>,
     /// Retain the last Workspace approval mode on restart; does not enable it.
     pub persist_auto_approve: Option<bool>,
+    /// Independently control automatic trust of the owning Project directory.
+    pub auto_trust_projects: Option<bool>,
 }
 
 /// Server-authoritative Settings projection and schema choices.
@@ -2563,6 +2565,8 @@ pub struct SettingsSnapshot {
     pub editor_rules: String,
     /// Whether Workspace approval mode survives restart.
     pub persist_auto_approve: bool,
+    /// Whether complete trust dialogs for the Project root are accepted.
+    pub auto_trust_projects: bool,
 }
 
 /// The reach of a bulk agent action. The session is the workspace unit today;
@@ -3374,7 +3378,7 @@ pub struct DevServerEntry {
 /// Local clients normally come from the same installed binary. SSH bridges
 /// check this explicitly before exposing a remote socket so mismatched bincode
 /// enums fail with a useful error instead of corrupting the terminal stream.
-pub const WIRE_PROTOCOL_VERSION: u32 = 34;
+pub const WIRE_PROTOCOL_VERSION: u32 = 35;
 
 /// Cap for trusted server replies, including full terminal repaints.
 pub const MAX_SERVER_FRAME: u32 = 8 * 1024 * 1024;
@@ -3632,7 +3636,7 @@ mod tests {
 
     #[test]
     fn tab_label_alignment_settings_round_trip_on_protocol_32() {
-        assert_eq!(WIRE_PROTOCOL_VERSION, 34);
+        assert_eq!(WIRE_PROTOCOL_VERSION, 35);
         for alignment in uniterm_core::TabLabelAlignment::ALL {
             let patch = SettingsPatch {
                 tab_label_alignment: Some(alignment.name().into()),
@@ -3649,7 +3653,7 @@ mod tests {
 
     #[test]
     fn guardrail_settings_round_trip_on_current_wire_protocol() {
-        assert_eq!(WIRE_PROTOCOL_VERSION, 34);
+        assert_eq!(WIRE_PROTOCOL_VERSION, 35);
         let bytes = encode_frame(&ClientMessage::SettingsApply(SettingsPatch {
             guardrail_max_active_runs: Some(4),
             guardrail_max_role_panes: Some(12),
@@ -3675,7 +3679,7 @@ mod tests {
 
     #[test]
     fn delegation_surface_round_trips_on_both_protocols() {
-        assert_eq!(WIRE_PROTOCOL_VERSION, 34);
+        assert_eq!(WIRE_PROTOCOL_VERSION, 35);
 
         // Binary attach protocol mirrors.
         let bytes = encode_frame(&ClientMessage::DelegationArm { pane: PaneId(7) });
