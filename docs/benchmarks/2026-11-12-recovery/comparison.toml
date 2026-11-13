@@ -1,0 +1,25 @@
+[comparison]
+title = "Terminal multiplexer comparison"
+seed = 0
+keep_workdirs = false
+
+[[contenders]]
+id = "uniterm"
+display_name = "uniterm"
+adapter = "uniterm"
+binary = "/path/to/uniterm-benchmark/.artifacts/2026-11-12-recovery/release/ut"
+source = "/path/to/uniterm-benchmark/.artifacts/2026-11-12-recovery/uniterm-src"
+
+[[contenders]]
+id = "herdr"
+display_name = "herdr"
+adapter = "herdr"
+binary = "/path/to/uniterm-benchmark/.artifacts/2026-11-11/herdr-src/target/release/herdr"
+source = "/path/to/uniterm-benchmark/.artifacts/2026-11-11/herdr-src"
+
+[[contenders]]
+id = "tmux"
+display_name = "tmux"
+adapter = "tmux"
+binary = "/path/to/uniterm-benchmark/.artifacts/2026-11-11/tmux-target/release/tmux"
+source = "/path/to/uniterm-benchmark/.artifacts/2026-11-11/tmux-src"
