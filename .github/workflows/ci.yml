@@ -1,0 +1,219 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Source commit or ref to test (blank uses the selected workflow ref)'
+        type: string
+        required: false
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Immutable release source commit to qualify'
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  RUST_BACKTRACE: '1'
+  UNITERM_PTY_DIAGNOSTICS: '1'
+
+jobs:
+  release-contracts:
+    name: Release recovery contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Validate the workflow definition used by this run, even when CI checks
+      # an older release whose source predates the recovery scripts.
+      - uses: actions/checkout@v4
+      - run: python3 scripts/test-release-recovery.py
+
+  gates:
+    name: Gates (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - name: Reserve disk space for Rust linking
+        if: runner.os == 'Linux'
+        run: sh scripts/prepare-ci-disk.sh
+      - name: Install the pinned toolchain
+        # Pinned to a commit (master as of 2026-09-03) so a compromised tag cannot change the toolchain we build releases with.
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: 1.96.0
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Build
+        run: cargo build --workspace --locked
+      - name: Diagnostic and evaluator regression tests
+        run: |
+          cargo build --locked -p uniterm-server --example history_check
+          python3 scripts/test-history-check.py target/debug/examples/history_check
+          python3 scripts/test-inbox-agents-unit.py
+          python3 scripts/test-ci-disk.py
+          if [ -f scripts/test-macos-crashes.py ]; then python3 scripts/test-macos-crashes.py; fi
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked
+      - name: Prepare short runtime paths
+        # Unix socket paths are limited to about 104 bytes. The macOS runner's
+        # default temp directory alone is 49, so tests get a short TMPDIR.
+        run: mkdir -p /tmp/ut /tmp/ut-rt && chmod 700 /tmp/ut /tmp/ut-rt
+      - name: Mark native diagnostic window
+        if: runner.os == 'macOS' && hashFiles('scripts/collect-macos-crashes.py') != ''
+        continue-on-error: true
+        timeout-minutes: 1
+        run: python3 scripts/collect-macos-crashes.py --mark
+      - name: Native PTY launch latency
+        run: cargo test -p uniterm-server --lib pty::tests::pty_spawn_latency_measurement --locked -- --exact --ignored --nocapture --test-threads=1
+      - name: Repeat native startup and recovery qualification
+        if: runner.os == 'macOS'
+        run: |
+          for attempt in $(seq 1 10); do
+            echo "Native startup qualification $attempt/10"
+            cargo test -p uniterm-cli --test agent_hooks --test session_watch_resources --test tab_cli --test timeline_resume --test worktree_cli --locked
+          done
+        env:
+          TMPDIR: /tmp/ut
+          XDG_RUNTIME_DIR: /tmp/ut-rt
+      - name: Test
+        run: cargo test --workspace --locked --no-fail-fast
+        env:
+          TMPDIR: /tmp/ut
+          XDG_RUNTIME_DIR: /tmp/ut-rt
+      - name: Repeat bounded shutdown qualification
+        run: |
+          for attempt in $(seq 1 20); do
+            echo "Shutdown qualification $attempt/20"
+            cargo test -p uniterm-server --lib shutdown_ --locked
+          done
+        env:
+          TMPDIR: /tmp/ut
+          XDG_RUNTIME_DIR: /tmp/ut-rt
+      - name: Repeat native orchestration launch qualification
+        if: runner.os == 'macOS'
+        run: |
+          for attempt in $(seq 1 20); do
+            echo "Native launch qualification $attempt/20"
+            cargo test -p uniterm-server --test w2_workflow --test orchestration_waiting --locked
+          done
+        env:
+          TMPDIR: /tmp/ut
+          XDG_RUNTIME_DIR: /tmp/ut-rt
+      - name: Install terminal oracle
+        run: |
+          if ! command -v tmux; then
+            if [ "${{ runner.os }}" = Linux ]; then
+              sudo apt-get update
+              sudo apt-get install -y tmux
+            else
+              brew install tmux
+            fi
+          fi
+      - name: Required terminal differential corpus
+        run: cargo test --locked -p uniterm-server --test vt_differential -- --ignored
+        env:
+          TMPDIR: /tmp/ut
+          XDG_RUNTIME_DIR: /tmp/ut-rt
+      - name: Collect native failure diagnostics
+        if: failure() && runner.os == 'macOS' && hashFiles('scripts/collect-macos-crashes.py') != ''
+        continue-on-error: true
+        timeout-minutes: 1
+        run: python3 scripts/collect-macos-crashes.py
+      - name: Upload native failure diagnostics
+        if: failure() && runner.os == 'macOS'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-gates-crashes-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/uniterm-native-crashes/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  release-profile:
+    name: Release-profile tests (${{ matrix.group }})
+    runs-on: ubuntu-latest
+    # One full-workspace optimized link exceeded 90 minutes on a private
+    # runner. Partition tests by package without changing release settings.
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: shared
+            packages: '--workspace --exclude uniterm-cli --exclude uniterm-server'
+          - group: server
+            packages: '-p uniterm-server'
+          - group: cli
+            packages: '-p uniterm-cli'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - name: Reserve disk space for Rust linking
+        if: runner.os == 'Linux'
+        run: sh scripts/prepare-ci-disk.sh
+      - # Pinned to a commit (master as of 2026-09-03) so a compromised tag cannot change the toolchain we build releases with.
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: 1.96.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Prepare short runtime paths
+        run: mkdir -p /tmp/ut /tmp/ut-rt && chmod 700 /tmp/ut /tmp/ut-rt
+      - name: Test in release
+        # debug_assert! bodies and overflow checks are compiled out here, so
+        # this run catches what the debug run cannot.
+        run: cargo test ${{ matrix.packages }} --release --locked --no-fail-fast
+        env:
+          TMPDIR: /tmp/ut
+          XDG_RUNTIME_DIR: /tmp/ut-rt
+      - name: Renderer, checkpoint, and history budgets
+        if: matrix.group == 'server'
+        run: |
+          cargo run --release --locked -p uniterm-server --example render_spike
+          cargo run --release --locked -p uniterm-server --example checkpoint_spike
+          cargo run --release --locked -p uniterm-server --example history_spike
+      - name: Tasks history PTY latency budget
+        if: matrix.group == 'server'
+        run: cargo test --release --locked -p uniterm-server --test task_launch task_history_pty_latency_budget -- --ignored --nocapture
+        env:
+          TMPDIR: /tmp/ut
+          XDG_RUNTIME_DIR: /tmp/ut-rt
+
+  installer:
+    name: Installer
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - name: Reserve disk space for Rust linking
+        if: runner.os == 'Linux'
+        run: sh scripts/prepare-ci-disk.sh
+      - name: Lint shell scripts
+        run: shellcheck install.sh scripts/build-dist.sh scripts/prepare-release-assets.sh scripts/verify-release-assets.sh scripts/test-installer.sh scripts/prepare-ci-disk.sh
+      - # Pinned to a commit (master as of 2026-09-03) so a compromised tag cannot change the toolchain we build releases with.
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: 1.96.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Installer integration test
+        run: sh scripts/test-installer.sh

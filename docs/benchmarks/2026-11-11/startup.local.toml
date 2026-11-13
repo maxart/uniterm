@@ -1,0 +1,18 @@
+[comparison]
+title = "Same-host startup follow-up"
+seed = 0
+keep_workdirs = false
+
+[[contenders]]
+id = "uniterm-old"
+display_name = "uniterm-old"
+adapter = "uniterm"
+binary = "/path/to/uniterm-benchmark/.artifacts/2026-11-11/uniterm-old-src/target/release/ut"
+source = "/path/to/uniterm-benchmark/.artifacts/2026-11-11/uniterm-old-src"
+
+[[contenders]]
+id = "uniterm-current"
+display_name = "uniterm-current"
+adapter = "uniterm"
+binary = "/path/to/uniterm-benchmark/.artifacts/2026-11-11/uniterm-src/target/release/ut"
+source = "/path/to/uniterm-benchmark/.artifacts/2026-11-11/uniterm-src"
