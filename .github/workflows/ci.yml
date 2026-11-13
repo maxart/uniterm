@@ -92,6 +92,15 @@ jobs:
         env:
           TMPDIR: /tmp/ut
           XDG_RUNTIME_DIR: /tmp/ut-rt
+      - name: Repeat bounded shutdown qualification
+        run: |
+          for attempt in $(seq 1 20); do
+            echo "Shutdown qualification $attempt/20"
+            cargo test -p uniterm-server --lib shutdown_ --locked
+          done
+        env:
+          TMPDIR: /tmp/ut
+          XDG_RUNTIME_DIR: /tmp/ut-rt
       - name: Repeat native orchestration launch qualification
         if: runner.os == 'macOS'
         run: |

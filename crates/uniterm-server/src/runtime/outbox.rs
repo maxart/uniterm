@@ -1,4 +1,5 @@
-//! Core-owned backlog for the runtime seam. Nothing here locks or waits.
+//! Core-owned backlog for the runtime seam. Normal dispatch never waits;
+//! only explicit shutdown may wait for channel readiness within its deadline.
 //!
 //! Replaceable observations move to the tail when superseded, so a newer
 //! checkpoint can never overtake the event records it includes. Lifecycle
@@ -6,8 +7,8 @@
 
 use std::collections::VecDeque;
 
-use crossbeam_channel::{Sender, TrySendError};
-use uniterm_proto::CoreToAgent;
+use crossbeam_channel::{Receiver, Sender, TrySendError};
+use uniterm_proto::{AgentToCore, CoreToAgent};
 
 const MAX_MESSAGES: usize = 512;
 const MAX_BYTES: usize = 128 * 1024 * 1024;
@@ -100,6 +101,42 @@ impl Outbox {
         }
     }
 
+    /// Finish ordered work during shutdown without polling for reply traffic.
+    /// Request capacity is progress even when the worker sends no reply.
+    pub(super) fn flush_before_shutdown(
+        &mut self,
+        sender: &Sender<CoreToAgent>,
+        replies: &Receiver<AgentToCore>,
+        deadline: std::time::Instant,
+    ) {
+        let disconnected = crossbeam_channel::never();
+        let mut replies = replies;
+        while !self.is_empty() && std::time::Instant::now() < deadline {
+            let (message, size) = self.pending.pop_front().expect("pending work");
+            crossbeam_channel::select! {
+                send(sender, message) -> result => {
+                    self.bytes -= size;
+                    if result.is_err() {
+                        self.failure = Some("agent runtime disconnected with pending work");
+                        break;
+                    }
+                }
+                recv(replies) -> result => {
+                    self.pending.push_front((message, size));
+                    if result.is_err() {
+                        // A disconnected receive is always ready. Exclude it
+                        // so it cannot spin while request capacity is blocked.
+                        replies = &disconnected;
+                    }
+                }
+                default(deadline.saturating_duration_since(std::time::Instant::now())) => {
+                    self.pending.push_front((message, size));
+                    break;
+                }
+            }
+        }
+    }
+
     pub(super) fn backpressured(&self) -> bool {
         self.pending.len() >= MAX_MESSAGES / 2 || self.bytes >= MAX_BYTES / 2
     }
@@ -144,6 +181,86 @@ fn barrier(message: &CoreToAgent) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shutdown_flush_uses_request_readiness_without_reply_acknowledgements() {
+        for replies_open in [true, false] {
+            let (sender, incoming) = crossbeam_channel::bounded(0);
+            let (reply_sender, replies) = crossbeam_channel::bounded(1);
+            let reply_sender = replies_open.then_some(reply_sender);
+            let mut outbox = Outbox::default();
+            for pane in 0..400 {
+                outbox.push(CoreToAgent::OscAgentEvent {
+                    pane: uniterm_proto::PaneId(pane),
+                    payload: String::new(),
+                });
+            }
+            let worker = std::thread::spawn(move || {
+                incoming
+                    .iter()
+                    .map(|message| match message {
+                        CoreToAgent::OscAgentEvent { pane, .. } => pane,
+                        _ => panic!("unexpected fixture request"),
+                    })
+                    .collect::<Vec<_>>()
+            });
+            let started = std::time::Instant::now();
+            outbox.flush_before_shutdown(
+                &sender,
+                &replies,
+                started + std::time::Duration::from_secs(2),
+            );
+            drop(sender);
+            let processed = worker.join().unwrap();
+            assert_eq!(
+                processed,
+                (0..400).map(uniterm_proto::PaneId).collect::<Vec<_>>()
+            );
+            assert!(outbox.is_empty());
+            assert_eq!(outbox.bytes, 0);
+            assert!(outbox.check_health().is_ok());
+            eprintln!(
+                "shutdown without replies (open={replies_open}): {:?}",
+                started.elapsed()
+            );
+            drop(reply_sender);
+        }
+    }
+
+    #[test]
+    fn shutdown_deadline_preserves_unsent_work_and_disconnect_reports_failure() {
+        let (sender, incoming) = crossbeam_channel::bounded(0);
+        let replies = crossbeam_channel::never();
+        let mut outbox = Outbox::default();
+        for pane in 0..2 {
+            outbox.push(CoreToAgent::OscAgentEvent {
+                pane: uniterm_proto::PaneId(pane),
+                payload: String::new(),
+            });
+        }
+        let bytes = outbox.bytes;
+        outbox.flush_before_shutdown(&sender, &replies, std::time::Instant::now());
+        assert_eq!(outbox.pending.len(), 2);
+        assert_eq!(outbox.bytes, bytes);
+        assert!(outbox.check_health().is_ok());
+        // A live but full request channel must wait only until the same
+        // absolute deadline and preserve the front message for retry.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(10);
+        outbox.flush_before_shutdown(&sender, &replies, deadline);
+        assert!(std::time::Instant::now() >= deadline);
+        assert_eq!(outbox.pending.len(), 2);
+        assert_eq!(outbox.bytes, bytes);
+        assert!(outbox.check_health().is_ok());
+        drop(incoming);
+        outbox.flush_before_shutdown(
+            &sender,
+            &replies,
+            std::time::Instant::now() + std::time::Duration::from_secs(2),
+        );
+        assert!(outbox.check_health().is_err());
+        assert!(matches!(&outbox.pending.front().unwrap().0,
+            CoreToAgent::OscAgentEvent { pane, .. } if *pane == uniterm_proto::PaneId(1)));
+    }
 
     fn snapshot(byte: u8) -> CoreToAgent {
         CoreToAgent::SnapshotSave {

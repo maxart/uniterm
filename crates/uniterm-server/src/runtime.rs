@@ -423,10 +423,9 @@ impl AgentRuntime {
         // Keep consuming replies while flushing the bounded request backlog:
         // otherwise a full reply channel would deadlock shutdown's writer.
         let deadline = std::time::Instant::now() + bound;
-        while !self.outbox.borrow().is_empty() && std::time::Instant::now() < deadline {
-            self.drain();
-            let _ = self.from_agent.recv_timeout(Duration::from_millis(1));
-        }
+        self.outbox
+            .borrow_mut()
+            .flush_before_shutdown(&self.to_agent, &self.from_agent, deadline);
         let (dead_tx, _dead_rx) = bounded(1);
         let old = std::mem::replace(&mut self.to_agent, dead_tx);
         drop(old);
