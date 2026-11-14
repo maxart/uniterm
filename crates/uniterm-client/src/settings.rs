@@ -1,0 +1,2638 @@
+//! Schema-backed Settings modal. The server owns and persists values; this
+//! client state only presents the current projection and emits one-field
+//! patches for keyboard or mouse interactions.
+//!
+//! The surface has two zones. The rail on the left lists setting names under
+//! section headings and nothing else, so it scans like a table of contents.
+//! The pane on the right shows the selected setting's value, its help text,
+//! and a control that fits its kind: a switch, an option list, a dedicated
+//! searchable theme browser, a stepper with its range, an inline editor, or a
+//! button. Values change only through explicit actions; moving the cursor
+//! through a list previews, Enter applies.
+
+use crate::agents::{
+    approval_choice, approval_lines, auto_install_lines, auto_update_lines, connector_label,
+    safe_fit, APPROVAL_CONTROL_ROW,
+};
+use crate::overlay::{
+    finish_lines, footer_text, modal_hit, modal_rect, modal_visible_rows, panel_style,
+    render_list_modal, styled_line, ui_theme, ModalHit, Rect,
+};
+use crate::text_input::{decode_key, edit_line, LineKey};
+use crate::theme_picker::{PickerAction, ThemePicker};
+use uniterm_proto::{SettingsPatch, SettingsSnapshot};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+// A patch is large but this action is produced once per keystroke inside a
+// modal, never on the render path; boxing it would only obscure the tests.
+#[allow(clippy::large_enum_variant)]
+pub enum SettingsAction {
+    None,
+    Redraw,
+    Close,
+    Apply(SettingsPatch),
+    /// Use the shared Workspace permission command with a single explicit toggle.
+    AutoApprove(bool),
+    /// Install every available provider connector through the shared command.
+    InstallAllConnectors,
+    /// Open the event-backed Workspace supervisor controls.
+    Overwatch,
+    /// Leave raw mode and run the hierarchy-only Desktop importer.
+    MigrateDesktop,
+    /// Check for an update after returning to cooked terminal mode.
+    Update,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Field {
+    Theme,
+    FollowOmarchyTheme,
+    AgentConnectors,
+    Overwatch,
+    AutoApproval,
+    PersistAutoApprove,
+    AutoTrustProjects,
+    AutoUpdateConnectors,
+    AutoInstallConnectors,
+    AutoTabNames,
+    AutoTrackTasks,
+    SwitcherEnabled,
+    RunGraph,
+    Sidebar,
+    SidebarWidth,
+    FileSidebar,
+    FileSidebarWidth,
+    Editor,
+    EditorRules,
+    Notifications,
+    NotifyCompletion,
+    NotificationSound,
+    NotificationSoundFile,
+    Status,
+    StatusPosition,
+    TabLabelAlignment,
+    FocusFollowsMouse,
+    FreezeOnSelect,
+    CopyOnSelect,
+    ConfirmClose,
+    ConfirmTabClose,
+    Scrollback,
+    Restore,
+    GuardActiveRuns,
+    GuardRolePanes,
+    GuardIterations,
+    GuardElapsedMinutes,
+    GuardAllowedProjects,
+    DesktopMigration,
+    Update,
+}
+
+/// Selectable settings in rail order. Sections group them; the order here is
+/// the order of navigation and stays stable for scripted tests.
+const FIELDS: &[Field] = &[
+    Field::Theme,
+    Field::Status,
+    Field::StatusPosition,
+    Field::TabLabelAlignment,
+    Field::RunGraph,
+    Field::Sidebar,
+    Field::SidebarWidth,
+    Field::FileSidebar,
+    Field::FileSidebarWidth,
+    Field::AgentConnectors,
+    Field::Overwatch,
+    Field::AutoApproval,
+    Field::PersistAutoApprove,
+    Field::AutoTrustProjects,
+    Field::AutoUpdateConnectors,
+    Field::AutoInstallConnectors,
+    Field::AutoTrackTasks,
+    Field::AutoTabNames,
+    Field::SwitcherEnabled,
+    Field::FocusFollowsMouse,
+    Field::FreezeOnSelect,
+    Field::CopyOnSelect,
+    Field::ConfirmClose,
+    Field::ConfirmTabClose,
+    Field::Scrollback,
+    Field::Restore,
+    Field::Editor,
+    Field::EditorRules,
+    Field::Notifications,
+    Field::NotifyCompletion,
+    Field::NotificationSound,
+    Field::NotificationSoundFile,
+    Field::GuardActiveRuns,
+    Field::GuardRolePanes,
+    Field::GuardIterations,
+    Field::GuardElapsedMinutes,
+    Field::GuardAllowedProjects,
+    Field::DesktopMigration,
+    Field::Update,
+];
+
+struct Section {
+    title: &'static str,
+    fields: &'static [Field],
+}
+
+const SECTIONS: &[Section] = &[
+    Section {
+        title: "Appearance",
+        fields: &[
+            Field::Theme,
+            Field::Status,
+            Field::StatusPosition,
+            Field::TabLabelAlignment,
+            Field::RunGraph,
+            Field::Sidebar,
+            Field::SidebarWidth,
+            Field::FileSidebar,
+            Field::FileSidebarWidth,
+        ],
+    },
+    Section {
+        title: "Agents",
+        fields: &[
+            Field::AutoTrackTasks,
+            Field::AgentConnectors,
+            Field::Overwatch,
+            Field::AutoApproval,
+            Field::PersistAutoApprove,
+            Field::AutoTrustProjects,
+            Field::AutoUpdateConnectors,
+            Field::AutoInstallConnectors,
+        ],
+    },
+    Section {
+        title: "Behaviour",
+        fields: &[
+            Field::AutoTabNames,
+            Field::SwitcherEnabled,
+            Field::FocusFollowsMouse,
+            Field::FreezeOnSelect,
+            Field::CopyOnSelect,
+            Field::ConfirmClose,
+            Field::ConfirmTabClose,
+            Field::Scrollback,
+            Field::Restore,
+        ],
+    },
+    Section {
+        title: "Editors",
+        fields: &[Field::Editor, Field::EditorRules],
+    },
+    Section {
+        title: "Notifications",
+        fields: &[
+            Field::Notifications,
+            Field::NotifyCompletion,
+            Field::NotificationSound,
+            Field::NotificationSoundFile,
+        ],
+    },
+    Section {
+        title: "Guardrails",
+        fields: &[
+            Field::GuardActiveRuns,
+            Field::GuardRolePanes,
+            Field::GuardIterations,
+            Field::GuardElapsedMinutes,
+            Field::GuardAllowedProjects,
+        ],
+    },
+    Section {
+        title: "Tools",
+        fields: &[Field::DesktopMigration, Field::Update],
+    },
+];
+
+/// What kind of control the pane shows for a setting.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Switch,
+    Choice,
+    Number,
+    Text,
+    Action,
+}
+
+/// One rail row: a section heading (not selectable) or a setting.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RailRow {
+    Heading(&'static str),
+    Setting(Field),
+}
+
+const LIST_W: u16 = 26;
+
+/// Where keyboard focus is: the rail, or a list of options in the pane.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Focus {
+    Rail,
+    Options { cursor: usize, query: String },
+}
+
+pub struct SettingsView {
+    settings: SettingsSnapshot,
+    sel: usize,
+    scroll: usize,
+    saved: bool,
+    error: Option<String>,
+    editing: Option<EditState>,
+    focus: Focus,
+    theme_picker: Option<ThemePicker>,
+    agents: Vec<uniterm_proto::AgentInfo>,
+    agent_error: Option<String>,
+    agents_loaded: bool,
+    auto_approve: bool,
+    overwatch: Option<uniterm_core::overwatch::State>,
+    connector_scroll: usize,
+}
+
+struct EditState {
+    field: Field,
+    buffer: String,
+    cursor: usize,
+}
+
+impl SettingsView {
+    pub fn new(settings: SettingsSnapshot, saved: bool, error: Option<String>) -> Self {
+        SettingsView {
+            settings,
+            sel: 0,
+            scroll: 0,
+            saved,
+            error,
+            editing: None,
+            focus: Focus::Rail,
+            theme_picker: None,
+            agents: Vec::new(),
+            agent_error: None,
+            agents_loaded: false,
+            auto_approve: false,
+            overwatch: None,
+            connector_scroll: 0,
+        }
+    }
+
+    pub fn refresh(&mut self, settings: SettingsSnapshot, saved: bool, error: Option<String>) {
+        let selected = self.field();
+        if let Some(picker) = &mut self.theme_picker {
+            picker.refresh(settings.themes.clone(), settings.theme.clone());
+        }
+        self.settings = settings;
+        let selection = self
+            .fields()
+            .position(|field| field == selected)
+            .unwrap_or(0);
+        self.sel = selection;
+        self.saved = saved;
+        self.error = error;
+    }
+
+    /// Apply the same provider snapshot shown by Agents Config, without polling.
+    pub fn refresh_agents(
+        &mut self,
+        agents: Vec<uniterm_proto::AgentInfo>,
+        enabled: bool,
+        error: Option<String>,
+    ) {
+        self.agents = agents;
+        self.agents_loaded = true;
+        self.auto_approval(enabled, error);
+        self.connector_scroll = self
+            .connector_scroll
+            .min(self.agents.len().saturating_sub(1));
+    }
+
+    /// Update the selector only after the server acknowledges a mode change.
+    pub fn auto_approval(&mut self, enabled: bool, error: Option<String>) {
+        self.auto_approve = enabled;
+        self.agent_error = error;
+    }
+
+    /// Project event-driven supervisor status only into its Settings detail pane.
+    pub fn refresh_overwatch(&mut self, state: &uniterm_core::overwatch::State) -> bool {
+        if self.overwatch.as_ref() == Some(state) {
+            return false;
+        }
+        self.overwatch = Some(state.clone());
+        self.field() == Field::Overwatch
+    }
+
+    fn choose_auto_approval(&mut self, enabled: bool) -> SettingsAction {
+        if !self.agents_loaded {
+            return SettingsAction::None;
+        }
+        // Explicit Off also revokes Pane arms when Workspace mode is already off.
+        if enabled && self.auto_approve {
+            return SettingsAction::Redraw;
+        }
+        SettingsAction::AutoApprove(enabled)
+    }
+
+    fn control_row(field: Field) -> usize {
+        match field {
+            Field::AgentConnectors => 3,
+            Field::AutoApproval | Field::AutoUpdateConnectors | Field::AutoInstallConnectors => {
+                APPROVAL_CONTROL_ROW
+            }
+            _ => CONTROL_ROW,
+        }
+    }
+
+    pub fn rect(cols: u16, rows: u16) -> Rect {
+        modal_rect(cols, rows)
+    }
+
+    /// Palette delivery changes appearance without disturbing pending controls.
+    pub(crate) fn refresh_theme(&mut self, theme: uniterm_core::Theme) {
+        self.settings.effective_theme = theme;
+    }
+
+    fn fields(&self) -> impl Iterator<Item = Field> + '_ {
+        FIELDS.iter().copied()
+    }
+
+    fn field(&self) -> Field {
+        self.fields().nth(self.sel).unwrap_or(Field::Theme)
+    }
+
+    fn rail_rows(&self) -> Vec<RailRow> {
+        let mut rows = Vec::new();
+        for (index, section) in SECTIONS.iter().enumerate() {
+            if index != 0 {
+                rows.push(RailRow::Heading(""));
+            }
+            rows.push(RailRow::Heading(section.title));
+            rows.extend(section.fields.iter().copied().map(RailRow::Setting));
+        }
+        rows
+    }
+
+    fn theme_current_lines(&self, rect: Rect) -> Vec<String> {
+        let width = usize::from(rect.w.saturating_sub(LIST_W + 7));
+        let current = if self.settings.omarchy_available && self.settings.follow_omarchy_theme {
+            format!("Following Omarchy; fallback: {}", self.settings.theme)
+        } else {
+            format!("Current: {}", self.settings.theme)
+        };
+        let mut lines = wrap(&current, width);
+        if self.settings.omarchy_available {
+            // Reserve the existing preview, the nested switch and the save row.
+            lines.truncate(
+                modal_visible_rows(rect.h)
+                    .saturating_sub(CONTROL_ROW + 7)
+                    .max(1),
+            );
+        }
+        lines
+    }
+
+    /// The appended switch uses the same preview rows for painting and clicks.
+    fn theme_follow_control(&self, rect: Rect) -> Option<(usize, String)> {
+        let preview_end = CONTROL_ROW + 5 + self.theme_current_lines(rect).len();
+        // Keep the switch stationary when the current-theme caption wraps on enable.
+        let reserved = (CONTROL_ROW + 7).min(modal_visible_rows(rect.h).saturating_sub(2));
+        let row = preview_end.max(reserved);
+        if !self.settings.omarchy_available || row >= modal_visible_rows(rect.h).saturating_sub(1) {
+            return None;
+        }
+        let width = usize::from(rect.w.saturating_sub(LIST_W + 3));
+        let label = clip(
+            Self::label(Field::FollowOmarchyTheme),
+            width.saturating_sub(17),
+        );
+        Some((row, label))
+    }
+
+    fn rail_index_of(&self, field: Field) -> usize {
+        self.rail_rows()
+            .iter()
+            .position(|row| *row == RailRow::Setting(field))
+            .unwrap_or(0)
+    }
+
+    fn label(field: Field) -> &'static str {
+        match field {
+            Field::Theme => "Theme",
+            Field::FollowOmarchyTheme => "Follow Omarchy theme",
+            Field::AgentConnectors => "Connectors",
+            Field::Overwatch => "Overwatch",
+            Field::AutoApproval => "Auto-approve",
+            Field::AutoTrustProjects => "Auto-trust Project directories",
+            Field::PersistAutoApprove => "Keep auto-approve on restart",
+            Field::AutoUpdateConnectors => "Auto-update connectors",
+            Field::AutoInstallConnectors => "Auto-install connectors",
+            Field::RunGraph => "Graph",
+            Field::AutoTabNames => "Auto-name tabs",
+            Field::AutoTrackTasks => "Auto-track tasks",
+            Field::SwitcherEnabled => "Find Tabs and Agents",
+            Field::Sidebar => "Projects sidebar",
+            Field::SidebarWidth => "Projects width",
+            Field::FileSidebar => "Observatory sidebar",
+            Field::FileSidebarWidth => "Observatory width",
+            Field::Editor => "Default editor",
+            Field::EditorRules => "File-type editors",
+            Field::Notifications => "Delivery",
+            Field::NotifyCompletion => "Completion notices",
+            Field::NotificationSound => "Sound",
+            Field::NotificationSoundFile => "Sound file",
+            Field::Status => "Status bar",
+            Field::StatusPosition => "Status position",
+            Field::TabLabelAlignment => "Tab label alignment",
+            Field::FocusFollowsMouse => "Focus follows mouse",
+            Field::FreezeOnSelect => "Freeze on select",
+            Field::CopyOnSelect => "Copy on select",
+            Field::ConfirmClose => "Confirm pane close",
+            Field::ConfirmTabClose => "Confirm tab close",
+            Field::Scrollback => "Scrollback lines",
+            Field::Restore => "Restore on startup",
+            Field::GuardActiveRuns => "Active run limit",
+            Field::GuardRolePanes => "Role Pane limit",
+            Field::GuardIterations => "Iteration limit",
+            Field::GuardElapsedMinutes => "Elapsed limit",
+            Field::GuardAllowedProjects => "Allowed Projects",
+            Field::DesktopMigration => "Import Uniterm Desktop",
+            Field::Update => "Update Uniterm",
+        }
+    }
+
+    fn action(&mut self) -> SettingsAction {
+        match self.field() {
+            Field::Update => SettingsAction::Update,
+            Field::Overwatch => SettingsAction::Overwatch,
+            Field::AgentConnectors if self.agents_loaded => SettingsAction::InstallAllConnectors,
+            Field::AgentConnectors => SettingsAction::None,
+            Field::AutoApproval => self.choose_auto_approval(!self.auto_approve),
+            _ => SettingsAction::MigrateDesktop,
+        }
+    }
+
+    fn kind(field: Field) -> Kind {
+        match field {
+            Field::Theme
+            | Field::Notifications
+            | Field::NotificationSound
+            | Field::StatusPosition
+            | Field::TabLabelAlignment => Kind::Choice,
+            Field::FollowOmarchyTheme
+            | Field::RunGraph
+            | Field::AutoTrustProjects
+            | Field::PersistAutoApprove
+            | Field::AutoTrackTasks
+            | Field::AutoTabNames
+            | Field::SwitcherEnabled
+            | Field::Sidebar
+            | Field::FileSidebar
+            | Field::NotifyCompletion
+            | Field::Status
+            | Field::FocusFollowsMouse
+            | Field::FreezeOnSelect
+            | Field::CopyOnSelect
+            | Field::ConfirmClose
+            | Field::ConfirmTabClose
+            | Field::Restore
+            | Field::AutoUpdateConnectors
+            | Field::AutoInstallConnectors => Kind::Switch,
+            Field::SidebarWidth
+            | Field::FileSidebarWidth
+            | Field::Scrollback
+            | Field::GuardActiveRuns
+            | Field::GuardRolePanes
+            | Field::GuardIterations
+            | Field::GuardElapsedMinutes => Kind::Number,
+            Field::Editor
+            | Field::EditorRules
+            | Field::NotificationSoundFile
+            | Field::GuardAllowedProjects => Kind::Text,
+            Field::Overwatch
+            | Field::DesktopMigration
+            | Field::Update
+            | Field::AgentConnectors
+            | Field::AutoApproval => Kind::Action,
+        }
+    }
+
+    fn value(&self, field: Field) -> String {
+        match field {
+            Field::AutoTrustProjects => on_off(self.settings.auto_trust_projects).into(),
+            Field::PersistAutoApprove => on_off(self.settings.persist_auto_approve).into(),
+            Field::AutoTrackTasks => on_off(self.settings.auto_track_tasks).into(),
+            Field::AutoTabNames => on_off(self.settings.auto_tab_names).into(),
+            Field::SwitcherEnabled => on_off(self.settings.switcher_enabled).into(),
+            Field::Theme => self.settings.theme.clone(),
+            Field::FollowOmarchyTheme => on_off(self.settings.follow_omarchy_theme).into(),
+            Field::TabLabelAlignment => {
+                uniterm_core::TabLabelAlignment::parse(&self.settings.tab_label_alignment)
+                    .unwrap_or_default()
+                    .label()
+                    .into()
+            }
+            Field::RunGraph => on_off(self.settings.run_graph).into(),
+            Field::Sidebar => on_off(self.settings.sidebar).into(),
+            Field::SidebarWidth => self.settings.sidebar_width.to_string(),
+            Field::FileSidebar => on_off(self.settings.file_sidebar).into(),
+            Field::FileSidebarWidth => self.settings.file_sidebar_width.to_string(),
+            Field::Editor => self.settings.editor.clone(),
+            Field::EditorRules => self.settings.editor_rules.clone(),
+            Field::Notifications => self.settings.notification_delivery.clone(),
+            Field::NotifyCompletion => on_off(self.settings.notify_completion).into(),
+            Field::NotificationSound => self.settings.notification_sound.clone(),
+            Field::NotificationSoundFile => self.settings.notification_sound_file.clone(),
+            Field::Status => on_off(self.settings.status).into(),
+            Field::StatusPosition => if self.settings.status_top {
+                "top"
+            } else {
+                "bottom"
+            }
+            .into(),
+            Field::FocusFollowsMouse => on_off(self.settings.focus_follows_mouse).into(),
+            Field::FreezeOnSelect => on_off(self.settings.freeze_on_select).into(),
+            Field::CopyOnSelect => on_off(self.settings.copy_on_select).into(),
+            Field::ConfirmClose => on_off(self.settings.confirm_close).into(),
+            Field::ConfirmTabClose => on_off(self.settings.confirm_tab_close).into(),
+            Field::Scrollback => self.settings.scrollback_limit.to_string(),
+            Field::Restore => on_off(self.settings.restore).into(),
+            Field::AutoUpdateConnectors => on_off(self.settings.auto_update_connectors).into(),
+            Field::AutoInstallConnectors => on_off(self.settings.auto_install_connectors).into(),
+            Field::GuardActiveRuns => self.settings.guardrail_max_active_runs.to_string(),
+            Field::GuardRolePanes => self.settings.guardrail_max_role_panes.to_string(),
+            Field::GuardIterations => self.settings.guardrail_max_iterations.to_string(),
+            Field::GuardElapsedMinutes => self.settings.guardrail_max_elapsed_minutes.to_string(),
+            Field::GuardAllowedProjects => self.settings.guardrail_allowed_projects.clone(),
+            Field::AutoApproval => on_off(self.auto_approve).into(),
+            Field::Overwatch | Field::DesktopMigration | Field::Update | Field::AgentConnectors => {
+                String::new()
+            }
+        }
+    }
+
+    fn switch_value(&self, field: Field) -> bool {
+        match field {
+            Field::FollowOmarchyTheme => self.settings.follow_omarchy_theme,
+            Field::RunGraph => self.settings.run_graph,
+            Field::AutoTrustProjects => self.settings.auto_trust_projects,
+            Field::PersistAutoApprove => self.settings.persist_auto_approve,
+            Field::AutoTabNames => self.settings.auto_tab_names,
+            Field::AutoTrackTasks => self.settings.auto_track_tasks,
+            Field::SwitcherEnabled => self.settings.switcher_enabled,
+            Field::Sidebar => self.settings.sidebar,
+            Field::FileSidebar => self.settings.file_sidebar,
+            Field::NotifyCompletion => self.settings.notify_completion,
+            Field::Status => self.settings.status,
+            Field::FocusFollowsMouse => self.settings.focus_follows_mouse,
+            Field::FreezeOnSelect => self.settings.freeze_on_select,
+            Field::CopyOnSelect => self.settings.copy_on_select,
+            Field::ConfirmClose => self.settings.confirm_close,
+            Field::ConfirmTabClose => self.settings.confirm_tab_close,
+            Field::Restore => self.settings.restore,
+            Field::AutoUpdateConnectors => self.settings.auto_update_connectors,
+            Field::AutoInstallConnectors => self.settings.auto_install_connectors,
+            _ => false,
+        }
+    }
+
+    fn description(field: Field) -> &'static str {
+        match field {
+            Field::FollowOmarchyTheme => "Follow this host's Omarchy palette, including remote attachments. Off preserves your chosen theme. Selecting a manual theme also turns following off.",
+            Field::AutoTabNames => "Name unnamed Tabs from agent task summaries or the current terminal directory and process. Your custom names always win. Off by default.",
+            Field::AutoTrackTasks => "Track accepted direct agent prompts in Tasks. Follow-ups share unfinished work; idle never proves completion. Prompt text is retained locally. On by default.",
+            Field::SwitcherEnabled => "Enable Workspace > Find Tabs and Agents and prefix + S to search Projects, Tabs, Panes, agents, paths and branches. Off by default.",
+            Field::Overwatch => "Choose a provider, turn Workspace monitoring ON or OFF, open chat in the right panel, and inspect recovery. Management permission is configured separately.",
+            Field::AgentConnectors => "Provider connector status",
+            Field::AutoApproval => "Workspace permission automation",
+            Field::AutoTrustProjects => "Trust only a complete dialog showing this Project root. Default on; independent of tool Auto-approve. Unknown paths stay manual.",
+            Field::PersistAutoApprove => "Keep each Workspace's ON/OFF choice across restarts. Does not enable approval. Default off; config is machine-wide.",
+            Field::AutoUpdateConnectors => "Refresh installed connectors when Uniterm updates.",
+            Field::AutoInstallConnectors => "Install missing connectors for installed agent CLIs.",
+            Field::Theme => {
+                "Browse all themes in a searchable list with a separate preview. Moving through themes does not apply them; Enter applies."
+            }
+            Field::Status => "Show the Workspace and Tab bar.",
+            Field::StatusPosition => "Place the status bar above or below the terminal.",
+            Field::TabLabelAlignment => "Align labels in the main Project Tabs and their stack tabs: Left, Center, or Right. Center is the default.",
+            Field::RunGraph => "Show ordinary agents, their recorded relationships, and optional workflow or relay evidence. Open Today > Graph or prefix-G; updates only on real events.",
+            Field::Sidebar => "Persistent Project hierarchy on the left.",
+            Field::SidebarWidth => "Width of the Project sidebar in cells.",
+            Field::FileSidebar => "Persistent right Observatory rail. Prefix + o toggles it too.",
+            Field::FileSidebarWidth => "Width of the Observatory in cells when visible.",
+            Field::FocusFollowsMouse => "Focus a Pane as the pointer moves over it.",
+            Field::FreezeOnSelect => {
+                "Hold a Pane's screen still while you select text, so an agent at work cannot scroll or repaint under the pointer. A plain drag then selects even in apps that take the mouse; they still get clicks, the wheel, and pointer motion."
+            }
+            Field::CopyOnSelect => {
+                "Copy a drag selection to the clipboard when the mouse is released. Off, the selection stays highlighted until y or Enter copies it, or Esc, q, or a click dismisses it."
+            }
+            Field::ConfirmClose => "Require confirmation before closing a Pane.",
+            Field::ConfirmTabClose => {
+                "Require confirmation before closing a Tab and every Pane in it."
+            }
+            Field::Scrollback => "Maximum retained lines per Pane.",
+            Field::Restore => "Restore saved Tabs, Panes, and scrollback on startup.",
+            Field::Editor => "Catch-all command used to open files. It is validated before it is saved.",
+            Field::EditorRules => {
+                "Overrides in extension=command form, separated by semicolons. Example: md=glow."
+            }
+            Field::Notifications => {
+                "Where agent attention goes: nowhere, a Uniterm toast, the host terminal (OSC), or a native system notification."
+            }
+            Field::NotifyCompletion => "Also notify when a working agent settles back to idle.",
+            Field::NotificationSound => {
+                "What a notice sounds like on this terminal: nothing, the terminal bell, a built-in two-tone chime, or your own audio file. Attention always sounds; a completion stays quiet for the Pane you are already watching."
+            }
+            Field::NotificationSoundFile => {
+                "Audio file played when Sound is file. Any format your system player understands."
+            }
+            Field::GuardActiveRuns => {
+                "Maximum active workflows and relays. Paused runs still reserve capacity."
+            }
+            Field::GuardRolePanes => "Maximum role Panes reserved by active native runs.",
+            Field::GuardIterations => {
+                "Maximum workflow or relay iterations captured when a run starts."
+            }
+            Field::GuardElapsedMinutes => {
+                "Minutes before an awaiting run pauses into the waiting queue."
+            }
+            Field::GuardAllowedProjects => {
+                "Exact Project names or roots separated by semicolons. Empty allows every Project in the Workspace."
+            }
+            Field::Update => "Check for a verified release of this local installation, then choose whether to install it. Running Workspaces stay intact.",
+            Field::DesktopMigration => {
+                "Import Desktop Workspaces, Projects, paths, and Tabs. Existing CLI Workspaces are never silently replaced."
+            }
+        }
+    }
+
+    /// The options of a choice setting, in display order.
+    fn options(&self, field: Field) -> Vec<String> {
+        match field {
+            Field::Theme => self.settings.themes.clone(),
+            Field::Notifications => self.settings.notification_deliveries.clone(),
+            Field::NotificationSound => self.settings.notification_sounds.clone(),
+            Field::StatusPosition => vec!["top".into(), "bottom".into()],
+            Field::TabLabelAlignment => uniterm_core::TabLabelAlignment::ALL
+                .iter()
+                .map(|alignment| alignment.label().into())
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Options after the search filter, as (index into `options`, name).
+    fn filtered_options(&self, field: Field, query: &str) -> Vec<(usize, String)> {
+        let needle = query.trim().to_ascii_lowercase();
+        self.options(field)
+            .into_iter()
+            .enumerate()
+            .filter(|(_, name)| needle.is_empty() || name.to_ascii_lowercase().contains(&needle))
+            .collect()
+    }
+
+    fn number_range(field: Field) -> (u64, u64, u64) {
+        match field {
+            Field::SidebarWidth => (16, 40, 2),
+            Field::FileSidebarWidth => (22, 52, 2),
+            Field::Scrollback => (100, 1_000_000, 1_000),
+            Field::GuardActiveRuns => (1, u64::from(uniterm_core::GUARDRAIL_MAX_ACTIVE_RUNS), 1),
+            Field::GuardRolePanes => (1, u64::from(uniterm_core::GUARDRAIL_MAX_ROLE_PANES), 1),
+            Field::GuardIterations => (1, u64::from(uniterm_core::GUARDRAIL_MAX_ITERATIONS), 1),
+            Field::GuardElapsedMinutes => (1, uniterm_core::GUARDRAIL_MAX_ELAPSED_SECONDS / 60, 15),
+            _ => (0, 0, 1),
+        }
+    }
+
+    fn set_choice(&mut self, field: Field, value: String) -> SettingsPatch {
+        let mut patch = SettingsPatch::default();
+        match field {
+            Field::Theme => {
+                self.settings.theme = value.clone();
+                self.settings.follow_omarchy_theme = false;
+                patch.theme = Some(value);
+            }
+            Field::Notifications => {
+                self.settings.notification_delivery = value.clone();
+                patch.notification_delivery = Some(value);
+            }
+            Field::NotificationSound => {
+                self.settings.notification_sound = value.clone();
+                patch.notification_sound = Some(value);
+            }
+            Field::TabLabelAlignment => {
+                let value = value.to_ascii_lowercase();
+                self.settings.tab_label_alignment = value.clone();
+                patch.tab_label_alignment = Some(value);
+            }
+            Field::StatusPosition => {
+                self.settings.status_top = value == "top";
+                patch.status_top = Some(self.settings.status_top);
+            }
+            _ => {}
+        }
+        self.saved = false;
+        self.error = None;
+        patch
+    }
+
+    fn change(&mut self, forward: bool) -> SettingsPatch {
+        let field = self.field();
+        match Self::kind(field) {
+            Kind::Choice => {
+                let options = self.options(field);
+                let current = options
+                    .iter()
+                    .position(|name| *name == self.value(field))
+                    .unwrap_or(0);
+                let count = options.len().max(1);
+                let next = if forward {
+                    (current + 1) % count
+                } else {
+                    (current + count - 1) % count
+                };
+                match options.get(next).cloned() {
+                    Some(value) => self.set_choice(field, value),
+                    None => SettingsPatch::default(),
+                }
+            }
+            Kind::Switch => self.toggle(field),
+            Kind::Number => {
+                let (min, max, step) = Self::number_range(field);
+                let current = self.value(field).parse::<u64>().unwrap_or(min);
+                let next = if forward {
+                    current.saturating_add(step)
+                } else {
+                    current.saturating_sub(step)
+                }
+                .clamp(min, max);
+                self.set_number(field, next)
+            }
+            Kind::Text | Kind::Action => SettingsPatch::default(),
+        }
+    }
+
+    fn toggle(&mut self, field: Field) -> SettingsPatch {
+        let mut patch = SettingsPatch::default();
+        match field {
+            Field::FollowOmarchyTheme if self.settings.omarchy_available => toggle(
+                &mut self.settings.follow_omarchy_theme,
+                &mut patch.follow_omarchy_theme,
+            ),
+            Field::RunGraph => toggle(&mut self.settings.run_graph, &mut patch.run_graph),
+            Field::AutoTrustProjects => toggle(
+                &mut self.settings.auto_trust_projects,
+                &mut patch.auto_trust_projects,
+            ),
+            Field::PersistAutoApprove => toggle(
+                &mut self.settings.persist_auto_approve,
+                &mut patch.persist_auto_approve,
+            ),
+            Field::AutoTrackTasks => toggle(
+                &mut self.settings.auto_track_tasks,
+                &mut patch.auto_track_tasks,
+            ),
+            Field::AutoTabNames => {
+                toggle(&mut self.settings.auto_tab_names, &mut patch.auto_tab_names)
+            }
+            Field::SwitcherEnabled => toggle(
+                &mut self.settings.switcher_enabled,
+                &mut patch.switcher_enabled,
+            ),
+            Field::Sidebar => toggle(&mut self.settings.sidebar, &mut patch.sidebar),
+            Field::FileSidebar => toggle(&mut self.settings.file_sidebar, &mut patch.file_sidebar),
+            Field::NotifyCompletion => toggle(
+                &mut self.settings.notify_completion,
+                &mut patch.notify_completion,
+            ),
+            Field::Status => toggle(&mut self.settings.status, &mut patch.status),
+            Field::FocusFollowsMouse => toggle(
+                &mut self.settings.focus_follows_mouse,
+                &mut patch.focus_follows_mouse,
+            ),
+            Field::FreezeOnSelect => toggle(
+                &mut self.settings.freeze_on_select,
+                &mut patch.freeze_on_select,
+            ),
+            Field::CopyOnSelect => {
+                toggle(&mut self.settings.copy_on_select, &mut patch.copy_on_select)
+            }
+            Field::ConfirmClose => {
+                toggle(&mut self.settings.confirm_close, &mut patch.confirm_close)
+            }
+            Field::ConfirmTabClose => toggle(
+                &mut self.settings.confirm_tab_close,
+                &mut patch.confirm_tab_close,
+            ),
+            Field::Restore => toggle(&mut self.settings.restore, &mut patch.restore),
+            Field::AutoUpdateConnectors => toggle(
+                &mut self.settings.auto_update_connectors,
+                &mut patch.auto_update_connectors,
+            ),
+            Field::AutoInstallConnectors => toggle(
+                &mut self.settings.auto_install_connectors,
+                &mut patch.auto_install_connectors,
+            ),
+            _ => {}
+        }
+        self.saved = false;
+        self.error = None;
+        patch
+    }
+
+    fn set_number(&mut self, field: Field, value: u64) -> SettingsPatch {
+        let mut patch = SettingsPatch::default();
+        match field {
+            Field::SidebarWidth => {
+                self.settings.sidebar_width = value as u16;
+                patch.sidebar_width = Some(value as u16);
+            }
+            Field::FileSidebarWidth => {
+                self.settings.file_sidebar_width = value as u16;
+                patch.file_sidebar_width = Some(value as u16);
+            }
+            Field::Scrollback => {
+                self.settings.scrollback_limit = value as usize;
+                patch.scrollback_limit = Some(value as usize);
+            }
+            Field::GuardActiveRuns => {
+                self.settings.guardrail_max_active_runs = value as u16;
+                patch.guardrail_max_active_runs = Some(value as u16);
+            }
+            Field::GuardRolePanes => {
+                self.settings.guardrail_max_role_panes = value as u16;
+                patch.guardrail_max_role_panes = Some(value as u16);
+            }
+            Field::GuardIterations => {
+                self.settings.guardrail_max_iterations = value as u32;
+                patch.guardrail_max_iterations = Some(value as u32);
+            }
+            Field::GuardElapsedMinutes => {
+                self.settings.guardrail_max_elapsed_minutes = value;
+                patch.guardrail_max_elapsed_minutes = Some(value);
+            }
+            _ => {}
+        }
+        self.saved = false;
+        self.error = None;
+        patch
+    }
+
+    fn is_editable_field(field: Field) -> bool {
+        matches!(Self::kind(field), Kind::Text | Kind::Number)
+    }
+
+    fn begin_edit(&mut self) {
+        let field = self.field();
+        if !Self::is_editable_field(field) {
+            return;
+        }
+        let buffer = self.value(field);
+        let cursor = buffer.len();
+        self.editing = Some(EditState {
+            field,
+            buffer,
+            cursor,
+        });
+        self.error = None;
+    }
+
+    fn enter_options(&mut self) {
+        let field = self.field();
+        if field == Field::Theme {
+            self.theme_picker = Some(ThemePicker::new(
+                self.settings.themes.clone(),
+                self.settings.theme.clone(),
+            ));
+            return;
+        }
+        let cursor = self
+            .options(field)
+            .iter()
+            .position(|name| *name == self.value(field))
+            .unwrap_or(0);
+        self.focus = Focus::Options {
+            cursor,
+            query: String::new(),
+        };
+    }
+
+    fn handle_edit(&mut self, input: &[u8]) -> SettingsAction {
+        let mut index = 0;
+        while index < input.len() {
+            let (key, consumed) = decode_key(input, index);
+            if consumed == 0 {
+                break;
+            }
+            index += consumed;
+            match key {
+                LineKey::Escape | LineKey::Cancel => {
+                    self.editing = None;
+                    return SettingsAction::Redraw;
+                }
+                LineKey::Enter => {
+                    let Some(editing) = self.editing.take() else {
+                        return SettingsAction::Redraw;
+                    };
+                    let value = editing.buffer.trim().to_string();
+                    let mut patch = SettingsPatch::default();
+                    match editing.field {
+                        Field::Editor => {
+                            self.settings.editor = value.clone();
+                            patch.editor = Some(value);
+                        }
+                        Field::EditorRules => {
+                            self.settings.editor_rules = value.clone();
+                            patch.editor_rules = Some(value);
+                        }
+                        Field::GuardAllowedProjects => {
+                            self.settings.guardrail_allowed_projects = value.clone();
+                            patch.guardrail_allowed_projects = Some(value);
+                        }
+                        Field::NotificationSoundFile => {
+                            self.settings.notification_sound_file = value.clone();
+                            patch.notification_sound_file = Some(value);
+                        }
+                        field if Self::kind(field) == Kind::Number => {
+                            let (min, max, _) = Self::number_range(field);
+                            match bounded_number(&value, min, max, Self::label(field)) {
+                                Ok(number) => patch = self.set_number(field, number),
+                                Err(error) => {
+                                    self.error = Some(error);
+                                    return SettingsAction::Redraw;
+                                }
+                            }
+                        }
+                        _ => return SettingsAction::Redraw,
+                    }
+                    self.saved = false;
+                    return SettingsAction::Apply(patch);
+                }
+                _ => {
+                    if let Some(editing) = &mut self.editing {
+                        edit_line(&mut editing.buffer, &mut editing.cursor, key);
+                    }
+                }
+            }
+        }
+        SettingsAction::Redraw
+    }
+
+    fn handle_options(&mut self, input: &[u8]) -> SettingsAction {
+        let field = self.field();
+        let mut index = 0;
+        while index < input.len() {
+            let (key, consumed) = decode_key(input, index);
+            if consumed == 0 {
+                break;
+            }
+            index += consumed;
+            let Focus::Options { cursor, query } = &self.focus else {
+                return SettingsAction::Redraw;
+            };
+            let (mut cursor, mut query) = (*cursor, query.clone());
+            match key {
+                LineKey::Escape | LineKey::Cancel | LineKey::Left => {
+                    self.focus = Focus::Rail;
+                    return SettingsAction::Redraw;
+                }
+                LineKey::Up => cursor = cursor.saturating_sub(1),
+                LineKey::Down => cursor += 1,
+                LineKey::Enter => {
+                    let chosen = self
+                        .filtered_options(field, &query)
+                        .get(cursor)
+                        .map(|(_, name)| name.clone());
+                    self.focus = Focus::Rail;
+                    return match chosen {
+                        Some(value) => SettingsAction::Apply(self.set_choice(field, value)),
+                        None => SettingsAction::Redraw,
+                    };
+                }
+                other => {
+                    let mut cursor_in_query = query.len();
+                    edit_line(&mut query, &mut cursor_in_query, other);
+                    cursor = 0;
+                }
+            }
+            let count = self.filtered_options(field, &query).len();
+            self.focus = Focus::Options {
+                cursor: cursor.min(count.saturating_sub(1)),
+                query,
+            };
+        }
+        SettingsAction::Redraw
+    }
+
+    fn focus_query(&self) -> String {
+        match &self.focus {
+            Focus::Options { query, .. } => query.clone(),
+            Focus::Rail => String::new(),
+        }
+    }
+
+    fn apply_picker_action(&mut self, action: PickerAction) -> SettingsAction {
+        match action {
+            PickerAction::None => SettingsAction::None,
+            PickerAction::Redraw => SettingsAction::Redraw,
+            PickerAction::Back => {
+                self.theme_picker = None;
+                SettingsAction::Redraw
+            }
+            PickerAction::Apply(name) => {
+                self.theme_picker = None;
+                SettingsAction::Apply(self.set_choice(Field::Theme, name))
+            }
+        }
+    }
+
+    /// Scroll the surface under the pointer without treating wheel input as text.
+    pub fn wheel(&mut self, down: bool, cols: u16, rows: u16, x: u16, y: u16) -> SettingsAction {
+        let rect = Self::rect(cols, rows);
+        if matches!(
+            modal_hit(rect, LIST_W, x, y),
+            ModalHit::Outside | ModalHit::Bar(_)
+        ) {
+            return SettingsAction::None;
+        }
+        if let Some(picker) = &mut self.theme_picker {
+            let action = picker.wheel(down);
+            return self.apply_picker_action(action);
+        }
+        let visible = modal_visible_rows(rect.h);
+        if matches!(modal_hit(rect, LIST_W, x, y), ModalHit::ListRow(_)) {
+            self.editing = None;
+            self.focus = Focus::Rail;
+            self.nav(down, visible);
+            return SettingsAction::Redraw;
+        }
+        if self.field() == Field::AgentConnectors {
+            self.scroll_connectors(down, 1);
+            return SettingsAction::Redraw;
+        }
+        if self.field() == Field::Theme {
+            self.enter_options();
+            return SettingsAction::Redraw;
+        }
+        if matches!(self.focus, Focus::Options { .. }) {
+            return self.handle_options(if down { b"\x1b[B" } else { b"\x1b[A" });
+        }
+        SettingsAction::None
+    }
+
+    fn scroll_connectors(&mut self, down: bool, step: usize) {
+        self.connector_scroll = if down {
+            self.connector_scroll
+                .saturating_add(step)
+                .min(self.agents.len().saturating_sub(1))
+        } else {
+            self.connector_scroll.saturating_sub(step)
+        };
+    }
+
+    pub fn handle(&mut self, input: &[u8], cols: u16, rows: u16) -> SettingsAction {
+        if self.field() == Field::AgentConnectors && matches!(input, b"\x1b[5~" | b"\x1b[6~") {
+            self.scroll_connectors(input == b"\x1b[6~", 4);
+            return SettingsAction::Redraw;
+        }
+        if let Some(picker) = &mut self.theme_picker {
+            let action = picker.handle(input, cols, rows);
+            return self.apply_picker_action(action);
+        }
+        if self.editing.is_some() {
+            return self.handle_edit(input);
+        }
+        if matches!(self.focus, Focus::Options { .. }) {
+            return self.handle_options(input);
+        }
+        let visible = modal_visible_rows(Self::rect(cols, rows).h);
+        let mut index = 0;
+        while index < input.len() {
+            let byte = input[index];
+            let tail = &input[index..];
+            if self.field() == Field::Theme && self.settings.omarchy_available && byte == b'f' {
+                return SettingsAction::Apply(self.toggle(Field::FollowOmarchyTheme));
+            }
+            if self.field() == Field::Theme
+                && (tail.starts_with(b"/")
+                    || tail.starts_with(b"\x1b[C")
+                    || matches!(tail.first(), Some(b' ' | b'l' | b'+' | b'\r' | b'\n')))
+            {
+                self.enter_options();
+                let used = if tail.starts_with(b"\x1b[C") { 3 } else { 1 };
+                let action = self
+                    .theme_picker
+                    .as_mut()
+                    .unwrap()
+                    .handle(&tail[used..], cols, rows);
+                return match self.apply_picker_action(action) {
+                    SettingsAction::None => SettingsAction::Redraw,
+                    action => action,
+                };
+            }
+
+            if byte == 0x1b {
+                if input.get(index + 1) == Some(&b'[') {
+                    match input.get(index + 2) {
+                        Some(b'A') => self.nav(false, visible),
+                        Some(b'B') => self.nav(true, visible),
+                        Some(b'C') if self.changes_from_rail() => {
+                            return SettingsAction::Apply(self.change(true));
+                        }
+                        Some(b'C') if Self::kind(self.field()) == Kind::Text => {
+                            self.begin_edit();
+                            return SettingsAction::Redraw;
+                        }
+                        Some(b'D') if self.changes_from_rail() => {
+                            return SettingsAction::Apply(self.change(false));
+                        }
+                        _ => {}
+                    }
+                    index += 3;
+                    continue;
+                }
+                return SettingsAction::Close;
+            }
+            match byte {
+                b'q' | 0x03 => return SettingsAction::Close,
+                b'j' => self.nav(true, visible),
+                b'k' => self.nav(false, visible),
+                b'h' | b'-' if self.changes_from_rail() => {
+                    return SettingsAction::Apply(self.change(false));
+                }
+                b'l' | b'+' | b' ' => {
+                    return match Self::kind(self.field()) {
+                        Kind::Action => self.action(),
+                        Kind::Text => {
+                            self.begin_edit();
+                            SettingsAction::Redraw
+                        }
+                        _ => SettingsAction::Apply(self.change(true)),
+                    };
+                }
+                0x0d | 0x0a => {
+                    return match Self::kind(self.field()) {
+                        Kind::Action => self.action(),
+                        Kind::Text | Kind::Number => {
+                            self.begin_edit();
+                            SettingsAction::Redraw
+                        }
+                        Kind::Choice => {
+                            self.enter_options();
+                            SettingsAction::Redraw
+                        }
+                        Kind::Switch => SettingsAction::Apply(self.change(true)),
+                    };
+                }
+                _ => {}
+            }
+            index += 1;
+        }
+        SettingsAction::Redraw
+    }
+
+    fn changes_from_rail(&self) -> bool {
+        self.field() != Field::Theme
+            && matches!(
+                Self::kind(self.field()),
+                Kind::Choice | Kind::Switch | Kind::Number
+            )
+    }
+
+    /// Move the rail selection, keeping the selected row and its heading in
+    /// view.
+    fn nav(&mut self, down: bool, visible: usize) {
+        self.sel = if down {
+            (self.sel + 1).min(self.fields().count() - 1)
+        } else {
+            self.sel.saturating_sub(1)
+        };
+        let row = self.rail_index_of(self.field());
+        // Keep the section heading visible when its first setting is chosen.
+        let top = row.saturating_sub(1);
+        if top < self.scroll {
+            self.scroll = top;
+        }
+        if row >= self.scroll + visible {
+            self.scroll = row + 1 - visible;
+        }
+    }
+
+    pub fn click(&mut self, cols: u16, rows: u16, x: u16, y: u16) -> SettingsAction {
+        if let Some(picker) = &mut self.theme_picker {
+            let action = picker.click(cols, rows, x, y);
+            return self.apply_picker_action(action);
+        }
+        let rect = Self::rect(cols, rows);
+        match modal_hit(rect, LIST_W, x, y) {
+            ModalHit::Outside => SettingsAction::Close,
+            ModalHit::ListRow(slot) => {
+                let rows = self.rail_rows();
+                let Some(RailRow::Setting(field)) = rows.get(self.scroll + slot).copied() else {
+                    return SettingsAction::None;
+                };
+                let index = self.fields().position(|item| item == field).unwrap_or(0);
+                self.editing = None;
+                self.focus = Focus::Rail;
+                if self.sel == index {
+                    match Self::kind(field) {
+                        Kind::Action => self.action(),
+                        Kind::Text | Kind::Number => {
+                            self.begin_edit();
+                            SettingsAction::Redraw
+                        }
+                        Kind::Choice => {
+                            self.enter_options();
+                            SettingsAction::Redraw
+                        }
+                        Kind::Switch => SettingsAction::Apply(self.change(true)),
+                    }
+                } else {
+                    self.sel = index;
+                    SettingsAction::Redraw
+                }
+            }
+            ModalHit::Bar(_) => SettingsAction::Close,
+            ModalHit::None => self.click_pane(rect, x, y),
+        }
+    }
+
+    /// A click inside the detail pane: an option row applies that option, a
+    /// stepper arrow steps, a switch row toggles.
+    fn click_pane(&mut self, rect: Rect, x: u16, y: u16) -> SettingsAction {
+        let pane_x = rect.x + LIST_W + 1;
+        if x <= pane_x || y <= rect.y {
+            return SettingsAction::None;
+        }
+        let row = usize::from(y - rect.y - 1);
+        let field = self.field();
+        if field == Field::Theme {
+            if let Some((control_row, label)) = self.theme_follow_control(rect) {
+                if row == control_row {
+                    let column = usize::from(x - pane_x - 1);
+                    return column
+                        .checked_sub(label.len() + 2)
+                        .and_then(approval_choice)
+                        .filter(|enabled| *enabled != self.settings.follow_omarchy_theme)
+                        .map_or(SettingsAction::None, |_| {
+                            SettingsAction::Apply(self.toggle(Field::FollowOmarchyTheme))
+                        });
+                }
+            }
+        }
+        if field == Field::AutoApproval && row == APPROVAL_CONTROL_ROW {
+            return approval_choice(usize::from(x - pane_x - 1))
+                .map_or(SettingsAction::None, |enabled| {
+                    self.choose_auto_approval(enabled)
+                });
+        }
+        if matches!(
+            field,
+            Field::AutoTrustProjects | Field::AutoUpdateConnectors | Field::AutoInstallConnectors
+        ) {
+            return if row == Self::control_row(field) {
+                match approval_choice(usize::from(x - pane_x - 1)) {
+                    Some(enabled) if enabled != self.switch_value(field) => {
+                        SettingsAction::Apply(self.change(true))
+                    }
+                    _ => SettingsAction::None,
+                }
+            } else {
+                SettingsAction::None
+            };
+        }
+        match Self::kind(field) {
+            Kind::Choice
+                if field == Field::Theme && (CONTROL_ROW..CONTROL_ROW + 2).contains(&row) =>
+            {
+                self.enter_options();
+                SettingsAction::Redraw
+            }
+            Kind::Choice if field == Field::Theme => SettingsAction::None,
+            Kind::Choice => {
+                let query = self.focus_query();
+                let visible = modal_visible_rows(rect.h);
+                let (first_row, list_rows, first_index) = self.option_window(field, visible);
+                let Some(offset) = row.checked_sub(first_row) else {
+                    return SettingsAction::None;
+                };
+                if offset >= list_rows {
+                    return SettingsAction::None;
+                }
+                match self
+                    .filtered_options(field, &query)
+                    .get(first_index + offset)
+                {
+                    Some((_, name)) => {
+                        let name = name.clone();
+                        self.focus = Focus::Rail;
+                        SettingsAction::Apply(self.set_choice(field, name))
+                    }
+                    None => SettingsAction::None,
+                }
+            }
+            Kind::Switch if row == CONTROL_ROW => SettingsAction::Apply(self.change(true)),
+            Kind::Number if row == CONTROL_ROW => {
+                let column = usize::from(x - pane_x - 1);
+                if column < 5 {
+                    SettingsAction::Apply(self.change(false))
+                } else if column < 5 + 2 + self.value(field).len() + 4 {
+                    SettingsAction::Apply(self.change(true))
+                } else {
+                    SettingsAction::None
+                }
+            }
+            Kind::Action if field != Field::AutoApproval && row == Self::control_row(field) => {
+                self.action()
+            }
+            Kind::Text if row == CONTROL_ROW => {
+                self.begin_edit();
+                SettingsAction::Redraw
+            }
+            _ => SettingsAction::None,
+        }
+    }
+
+    /// Geometry of the option list in the pane: the detail row of its first
+    /// entry, how many rows it may use, and the index of the first option
+    /// shown after scrolling to the cursor. Rendering and clicks share it.
+    fn option_window(&self, _field: Field, visible: usize) -> (usize, usize, usize) {
+        let first_row = CONTROL_ROW;
+        let list_rows = visible.saturating_sub(first_row + 2).max(1);
+        let cursor = match &self.focus {
+            Focus::Options { cursor, .. } => *cursor,
+            Focus::Rail => 0,
+        };
+        let first_index = cursor.saturating_sub(list_rows.saturating_sub(1));
+        (first_row, list_rows, first_index)
+    }
+
+    pub fn render(&self, cols: u16, rows: u16) -> Vec<u8> {
+        if let Some(picker) = &self.theme_picker {
+            return picker.render(cols, rows);
+        }
+        let rect = Self::rect(cols, rows);
+        let inner = rect.w.saturating_sub(2) as usize;
+        let visible = modal_visible_rows(rect.h);
+        let panel = panel_style();
+        let theme = ui_theme();
+        let accent = format!("\x1b[1;{}m", theme.accent.sgr_fg());
+        let muted = format!("\x1b[{}m", theme.muted.sgr_fg());
+        let strong = format!("\x1b[1;{}m", theme.foreground.sgr_fg());
+        let heading_style = format!("\x1b[1;{}m", theme.muted.sgr_fg());
+        let error_style = format!("\x1b[{}m", theme.error.sgr_fg());
+        let success = format!("\x1b[{}m", theme.success.sgr_fg());
+        let warning = format!("\x1b[{}m", theme.warning.sgr_fg());
+        let selection = format!(
+            "\x1b[{};{}m",
+            theme.status_active_bg.sgr_bg(),
+            theme.status_active_fg.sgr_fg()
+        );
+        let detail_width = inner.saturating_sub(LIST_W as usize + 1);
+        let text_width = detail_width.saturating_sub(4);
+        let field = self.field();
+        let kind = Self::kind(field);
+
+        // Title, help text, then the control.
+        let mut detail = vec![
+            styled_line(&[]),
+            styled_line(&[(&panel, "  "), (&accent, Self::label(field))]),
+        ];
+        for line in wrap(
+            if matches!(
+                field,
+                Field::AutoUpdateConnectors | Field::AutoInstallConnectors
+            ) {
+                ""
+            } else {
+                Self::description(field)
+            },
+            text_width,
+        ) {
+            detail.push(styled_line(&[(&panel, "  "), (&muted, &line)]));
+        }
+        while detail.len() < Self::control_row(field) {
+            detail.push(styled_line(&[]));
+        }
+        detail.truncate(Self::control_row(field));
+
+        let mut hints: Vec<(&str, &str)> = vec![("\u{2191}\u{2193}", "select")];
+        match kind {
+            Kind::Switch => {
+                let on = self.switch_value(field);
+                detail.push(switch_line(on, "", &panel, &accent, &muted));
+                if matches!(
+                    field,
+                    Field::AutoUpdateConnectors | Field::AutoInstallConnectors
+                ) {
+                    detail = if field == Field::AutoUpdateConnectors {
+                        auto_update_lines(on, detail_width)
+                    } else {
+                        auto_install_lines(on, detail_width)
+                    };
+                }
+                hints.push(("enter", "toggle"));
+            }
+            Kind::Number => {
+                let (min, max, step) = Self::number_range(field);
+                let shown = self.editing.as_ref().map_or_else(
+                    || self.value(field),
+                    |editing| {
+                        let mut value = editing.buffer.clone();
+                        value.insert(editing.cursor.min(value.len()), '\u{2588}');
+                        value
+                    },
+                );
+                let unit = if field == Field::GuardElapsedMinutes {
+                    " min"
+                } else {
+                    ""
+                };
+                detail.push(styled_line(&[
+                    (&panel, "  "),
+                    (&accent, "\u{25C2}"),
+                    (&panel, "  "),
+                    (&strong, &format!("{shown}{unit}")),
+                    (&panel, "  "),
+                    (&accent, "\u{25B8}"),
+                    (&panel, "    "),
+                    (&muted, &format!("{min} to {max}, step {step}")),
+                ]));
+                hints.push(("\u{2190}\u{2192}", "step"));
+                hints.push((
+                    "enter",
+                    if self.editing.is_some() {
+                        "save"
+                    } else {
+                        "type"
+                    },
+                ));
+            }
+            Kind::Text => {
+                let shown = self.editing.as_ref().map_or_else(
+                    || self.value(field),
+                    |editing| {
+                        let mut value = editing.buffer.clone();
+                        value.insert(editing.cursor.min(value.len()), '\u{2588}');
+                        value
+                    },
+                );
+                let placeholder = if shown.is_empty() {
+                    if field == Field::GuardAllowedProjects {
+                        "every Project in the Workspace"
+                    } else {
+                        "not set"
+                    }
+                } else {
+                    ""
+                };
+                let box_width = text_width.max(12);
+                let line = clip(&format!(" \u{203A} {shown}{placeholder}"), box_width - 2);
+                let border = if self.editing.is_some() {
+                    accent.as_str()
+                } else {
+                    muted.as_str()
+                };
+                detail.push(styled_line(&[
+                    (&panel, "  "),
+                    (
+                        border,
+                        &format!("\u{256D}{}\u{256E}", "\u{2500}".repeat(box_width - 2)),
+                    ),
+                ]));
+                detail.push(styled_line(&[
+                    (&panel, "  "),
+                    (border, "\u{2502}"),
+                    (
+                        if placeholder.is_empty() {
+                            strong.as_str()
+                        } else {
+                            muted.as_str()
+                        },
+                        &format!("{line:<width$}", width = box_width - 2),
+                    ),
+                    (border, "\u{2502}"),
+                ]));
+                detail.push(styled_line(&[
+                    (&panel, "  "),
+                    (
+                        border,
+                        &format!("\u{2570}{}\u{256F}", "\u{2500}".repeat(box_width - 2)),
+                    ),
+                ]));
+                hints.push((
+                    "enter",
+                    if self.editing.is_some() {
+                        "save"
+                    } else {
+                        "edit"
+                    },
+                ));
+                if self.editing.is_some() {
+                    hints.push(("esc", "cancel"));
+                }
+            }
+            Kind::Choice if field == Field::Theme => {
+                detail.push(styled_line(&[
+                    (&panel, "  "),
+                    (
+                        &selection,
+                        &clip(
+                            &format!(" Browse {} themes... ", self.settings.themes.len()),
+                            text_width,
+                        ),
+                    ),
+                ]));
+                detail.push(styled_line(&[
+                    (&panel, "  "),
+                    (&muted, &clip("Search, scroll and preview", text_width)),
+                ]));
+                for line in self.theme_current_lines(rect) {
+                    detail.push(styled_line(&[(&panel, "  "), (&strong, &line)]));
+                }
+                let preview = self.settings.effective_theme;
+                let colors = [
+                    preview.background,
+                    preview.foreground,
+                    preview.surface,
+                    preview.muted,
+                    preview.accent,
+                    preview.success,
+                    preview.warning,
+                    preview.error,
+                ];
+                let swatch_width = (text_width / colors.len()).clamp(1, 3);
+                let mut swatches = panel.clone() + "  ";
+                for color in colors.iter().take(text_width / swatch_width) {
+                    swatches.push_str(&format!(
+                        "\x1b[0;{}m{}",
+                        color.sgr_bg(),
+                        " ".repeat(swatch_width)
+                    ));
+                }
+                swatches.push_str(&panel);
+                detail.push((
+                    swatches,
+                    2 + colors.len().min(text_width / swatch_width) * swatch_width,
+                ));
+                let terminal = format!(
+                    "\x1b[0;{};{}m",
+                    preview.foreground.sgr_fg(),
+                    preview.background.sgr_bg()
+                );
+                detail.push(styled_line(&[
+                    (&panel, "  "),
+                    (
+                        &terminal,
+                        &format!(
+                            "{:<width$}",
+                            clip(" $ uniterm", text_width),
+                            width = text_width
+                        ),
+                    ),
+                    (&panel, ""),
+                ]));
+                let mut status = vec![(panel.clone(), "  ".to_string())];
+                let mut remaining = text_width;
+                for (label, color) in [
+                    (" Ready ", preview.success),
+                    (" Attention ", preview.warning),
+                    (" Error ", preview.error),
+                ] {
+                    let label = clip(label, remaining);
+                    remaining -= label.len();
+                    status.push((
+                        format!("\x1b[0;{};{}m", color.sgr_fg(), preview.background.sgr_bg()),
+                        label,
+                    ));
+                }
+                status.push((panel.clone(), String::new()));
+                detail.push(styled_line(
+                    &status
+                        .iter()
+                        .map(|(style, text)| (style.as_str(), text.as_str()))
+                        .collect::<Vec<_>>(),
+                ));
+                if let Some((row, label)) = self.theme_follow_control(rect) {
+                    while detail.len() < row {
+                        detail.push(styled_line(&[]));
+                    }
+                    detail.push(switch_line(
+                        self.settings.follow_omarchy_theme,
+                        &label,
+                        &panel,
+                        &accent,
+                        &muted,
+                    ));
+                }
+                hints.push(("enter /", "browse"));
+                if self.settings.omarchy_available {
+                    hints.push(("f", "toggle follow"));
+                }
+            }
+            Kind::Choice => {
+                let query = self.focus_query();
+                let in_list = matches!(self.focus, Focus::Options { .. });
+                let cursor = match &self.focus {
+                    Focus::Options { cursor, .. } => Some(*cursor),
+                    Focus::Rail => None,
+                };
+                let options = self.filtered_options(field, &query);
+                let current = self.value(field);
+                let (_, list_rows, first) = self.option_window(field, visible);
+                for (offset, (_, name)) in options.iter().enumerate().skip(first).take(list_rows) {
+                    let is_cursor = cursor == Some(offset);
+                    let is_current = *name == current;
+                    let marker = if is_current { "\u{25C9}" } else { "\u{25CB}" };
+                    let pointer = if is_cursor { "\u{25B8}" } else { " " };
+                    let style = if is_cursor {
+                        selection.as_str()
+                    } else if is_current {
+                        accent.as_str()
+                    } else {
+                        panel.as_str()
+                    };
+                    let text = format!(" {pointer} {marker} {name}");
+                    let width = text_width.saturating_sub(1).max(text.chars().count());
+                    detail.push(styled_line(&[
+                        (&panel, "  "),
+                        (style, &format!("{text:<width$}")),
+                    ]));
+                }
+                if options.is_empty() {
+                    detail.push(styled_line(&[(&panel, "  "), (&muted, "No theme matches")]));
+                } else if first + list_rows < options.len() {
+                    let hidden = options.len() - first - list_rows;
+                    detail.push(styled_line(&[
+                        (&panel, "  "),
+                        (&muted, &format!("   \u{2026} {hidden} more below")),
+                    ]));
+                }
+                if in_list {
+                    hints.push(("enter", "apply"));
+                    hints.push(("esc", "back"));
+                } else {
+                    hints.push(("\u{2190}\u{2192}", "cycle"));
+                    hints.push(("enter", "choose"));
+                }
+            }
+            Kind::Action if field == Field::AutoApproval => {
+                if self.agents_loaded {
+                    detail = approval_lines(self.auto_approve, detail_width);
+                } else {
+                    detail.push(styled_line(&[(&panel, "  Loading Workspace mode...")]));
+                }
+                hints.push(("enter", "toggle"));
+            }
+            Kind::Action if field == Field::AgentConnectors => {
+                detail.push(styled_line(&[
+                    (&panel, "  "),
+                    (
+                        &selection,
+                        if self.agents_loaded {
+                            " Install all connectors "
+                        } else {
+                            " Loading connectors... "
+                        },
+                    ),
+                ]));
+                detail.push(styled_line(&[]));
+                let available = visible.saturating_sub(detail.len() + 2);
+                for agent in self
+                    .agents
+                    .iter()
+                    .skip(self.connector_scroll)
+                    .take(available)
+                {
+                    let status = if agent.installed {
+                        connector_label(agent.connector)
+                    } else {
+                        "CLI missing"
+                    };
+                    let row = safe_fit(&format!("{}: {status}", agent.name), text_width);
+                    detail.push(styled_line(&[(&panel, "  "), (&panel, &row)]));
+                }
+                if self.agents.len() > available {
+                    detail.push(styled_line(&[
+                        (&panel, "  "),
+                        (&muted, "Scroll for more providers"),
+                    ]));
+                }
+                hints.push(("enter", "install all"));
+                hints.push(("PgUp/PgDn", "providers"));
+            }
+            Kind::Action => {
+                detail.push(styled_line(&[
+                    (&panel, "  "),
+                    (
+                        &selection,
+                        if field == Field::Overwatch {
+                            " Open Overwatch "
+                        } else if field == Field::Update {
+                            " Check for updates "
+                        } else {
+                            " Open the importer "
+                        },
+                    ),
+                ]));
+                if field == Field::Overwatch {
+                    detail.push(styled_line(&[]));
+                    if let Some(state) = &self.overwatch {
+                        let phase = match state.phase {
+                            uniterm_core::overwatch::Phase::Off => "Off",
+                            uniterm_core::overwatch::Phase::Starting => "Starting",
+                            uniterm_core::overwatch::Phase::Running => "Running",
+                            uniterm_core::overwatch::Phase::Recovering => "Recovering",
+                            uniterm_core::overwatch::Phase::Attention => "Needs attention",
+                        };
+                        let status =
+                            format!("{} - {phase}", if state.enabled { "ON" } else { "OFF" });
+                        let provider = if state.provider.is_empty() {
+                            "Not configured"
+                        } else {
+                            &state.provider
+                        };
+                        for text in [
+                            format!("Status: {status}"),
+                            format!("Provider: {provider}"),
+                            format!(
+                                "Model: {}",
+                                state.model.as_deref().unwrap_or("Provider default")
+                            ),
+                            format!(
+                                "Effort: {}",
+                                state.effort.as_deref().unwrap_or("Harness default")
+                            ),
+                            format!(
+                                "Access: {}",
+                                if state.manage {
+                                    "Workspace management"
+                                } else {
+                                    "Read-only metadata"
+                                }
+                            ),
+                            format!(
+                                "Recovery attempts: {} / {}",
+                                state.recoveries,
+                                uniterm_core::overwatch::MAX_RECOVERIES
+                            ),
+                            state.message.clone(),
+                        ] {
+                            for line in wrap(&safe_fit(&text, 512), text_width) {
+                                detail.push(styled_line(&[(&panel, "  "), (&panel, &line)]));
+                            }
+                        }
+                    } else {
+                        detail.push(styled_line(&[(&panel, "  Loading Workspace status...")]));
+                    }
+                }
+                hints.push(("enter", "open"));
+            }
+        }
+        if !hints.iter().any(|(key, _)| *key == "esc") {
+            hints.push(("esc", "close"));
+        }
+
+        // Save state on the last row of the pane.
+        while detail.len() < visible.saturating_sub(1) {
+            detail.push(styled_line(&[]));
+        }
+        detail.truncate(visible.saturating_sub(1));
+        let agent_field = matches!(field, Field::AgentConnectors | Field::AutoApproval);
+        if let Some(error) = if agent_field {
+            self.agent_error.as_ref()
+        } else if field == Field::Theme && self.settings.omarchy_available {
+            self.error
+                .as_ref()
+                .or(self.settings.theme_follow_error.as_ref())
+        } else {
+            self.error.as_ref()
+        } {
+            detail.push(styled_line(&[
+                (&panel, "  "),
+                (
+                    &error_style,
+                    &safe_fit(&format!("Update failed: {error}"), text_width),
+                ),
+            ]));
+        } else if agent_field {
+            detail.push(styled_line(&[
+                (&panel, "  "),
+                (
+                    &muted,
+                    if field == Field::AutoApproval {
+                        "This Workspace session"
+                    } else {
+                        "Local provider integrations"
+                    },
+                ),
+            ]));
+        } else {
+            detail.push(styled_line(&[
+                (&panel, "  "),
+                (
+                    if self.saved { &success } else { &warning },
+                    if self.saved {
+                        "\u{2713} Saved"
+                    } else {
+                        "\u{25CF} Saving\u{2026}"
+                    },
+                ),
+            ]));
+        }
+        let detail = finish_lines(detail, &panel, detail_width, visible);
+        let rail = self.rail_rows();
+        render_list_modal(
+            cols,
+            rows,
+            " Settings ",
+            LIST_W as usize,
+            |slot| {
+                let row = *rail.get(self.scroll + slot)?;
+                let width = LIST_W as usize;
+                Some(match row {
+                    RailRow::Heading(title) => {
+                        let text = clip(&format!(" {}", title.to_ascii_uppercase()), width);
+                        format!(
+                            "{panel}{heading_style}{text}{}{panel}",
+                            " ".repeat(width - text.chars().count())
+                        )
+                    }
+                    RailRow::Setting(field) => {
+                        let text = clip(&format!("   {}", Self::label(field)), width - 1);
+                        if field == self.field() {
+                            format!(
+                                "{panel}{accent}\u{258E}{selection}{text}{}{panel}",
+                                " ".repeat(width - 1 - text.chars().count())
+                            )
+                        } else {
+                            format!(
+                                "{panel} {text}{}",
+                                " ".repeat(width - 1 - text.chars().count())
+                            )
+                        }
+                    }
+                })
+            },
+            &detail,
+            &footer_text(&hints, inner),
+        )
+    }
+}
+
+/// Detail row (0-based inside the pane) where the control starts; the title
+/// and help text above it keep a fixed height so controls never jump.
+const CONTROL_ROW: usize = 6;
+
+/// Shared ON/OFF row; an optional label lets Theme host its opt-in inline.
+fn switch_line(on: bool, label: &str, panel: &str, accent: &str, muted: &str) -> (String, usize) {
+    let prefix = if label.is_empty() {
+        String::new()
+    } else {
+        format!("{label}  ")
+    };
+    let (on_style, off_style) = if on { (accent, muted) } else { (muted, accent) };
+    styled_line(&[
+        (panel, "  "),
+        (panel, &prefix),
+        (on_style, if on { "◉ on " } else { "○ on " }),
+        (panel, "   "),
+        (off_style, if on { "○ off" } else { "◉ off" }),
+    ])
+}
+
+fn toggle(value: &mut bool, patch: &mut Option<bool>) {
+    *value = !*value;
+    *patch = Some(*value);
+}
+
+fn on_off(value: bool) -> &'static str {
+    if value {
+        "on"
+    } else {
+        "off"
+    }
+}
+
+fn bounded_number(value: &str, minimum: u64, maximum: u64, label: &str) -> Result<u64, String> {
+    let value = value
+        .parse::<u64>()
+        .map_err(|_| format!("{label} must be an integer from {minimum} to {maximum}"))?;
+    if !(minimum..=maximum).contains(&value) {
+        return Err(format!(
+            "{label} must be an integer from {minimum} to {maximum}"
+        ));
+    }
+    Ok(value)
+}
+
+/// Greedy word wrap at `width` cells for the help text.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(8);
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > width {
+            lines.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
+fn clip(text: &str, width: usize) -> String {
+    text.chars().take(width).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn snapshot() -> SettingsSnapshot {
+        SettingsSnapshot {
+            theme: "uniterm-dark".into(),
+            follow_omarchy_theme: false,
+            omarchy_available: false,
+            effective_theme: uniterm_core::Theme::dark(),
+            theme_follow_error: None,
+            themes: vec!["uniterm-dark".into(), "nord".into()],
+            status: true,
+            status_top: false,
+            tab_label_alignment: "center".into(),
+            run_graph: false,
+            sidebar: true,
+            sidebar_width: 24,
+            file_sidebar: false,
+            file_sidebar_width: 32,
+            notification_delivery: "uniterm".into(),
+            notification_deliveries: vec![
+                "off".into(),
+                "uniterm".into(),
+                "terminal".into(),
+                "system".into(),
+            ],
+            notification_sound: "bell".into(),
+            notification_sounds: vec!["off".into(), "bell".into(), "chime".into(), "file".into()],
+            notification_sound_file: String::new(),
+            notify_completion: false,
+            focus_follows_mouse: false,
+            freeze_on_select: false,
+            copy_on_select: true,
+            confirm_close: true,
+            confirm_tab_close: true,
+            scrollback_limit: 10_000,
+            restore: true,
+            auto_update_connectors: false,
+            auto_install_connectors: false,
+            auto_tab_names: false,
+            auto_track_tasks: true,
+            persist_auto_approve: false,
+            auto_trust_projects: true,
+            switcher_enabled: false,
+            guardrail_max_active_runs: 8,
+            guardrail_max_role_panes: 16,
+            guardrail_max_iterations: 3,
+            guardrail_max_elapsed_minutes: 120,
+            guardrail_allowed_projects: "api; /work/web".into(),
+            editor: "vi".into(),
+            editor_rules: "md=glow".into(),
+        }
+    }
+
+    fn select(view: &mut SettingsView, field: Field) {
+        let selection = view.fields().position(|item| item == field).unwrap();
+        view.sel = selection;
+    }
+
+    #[test]
+    fn omarchy_follow_is_nested_below_theme_preview_with_shared_input_geometry() {
+        for (cols, rows) in [(80, 24), (120, 40)] {
+            let mut ordinary = snapshot();
+            ordinary.follow_omarchy_theme = true;
+            let mut view = SettingsView::new(ordinary, true, None);
+            let rail = view.rail_rows();
+            assert!(!view
+                .fields()
+                .any(|field| field == Field::FollowOmarchyTheme));
+            assert!(view
+                .theme_follow_control(SettingsView::rect(cols, rows))
+                .is_none());
+            assert!(!String::from_utf8(view.render(cols, rows))
+                .unwrap()
+                .contains("Follow Omarchy"));
+            assert_eq!(view.handle(b"f", cols, rows), SettingsAction::Redraw);
+
+            let mut eligible = snapshot();
+            eligible.omarchy_available = true;
+            view.refresh(eligible, true, None);
+            assert!(view.rail_rows() == rail);
+            assert!(
+                !view.settings.follow_omarchy_theme,
+                "following stays opt-in"
+            );
+            let rect = SettingsView::rect(cols, rows);
+            let (row, label) = view.theme_follow_control(rect).unwrap();
+            assert_eq!(row, CONTROL_ROW + 7);
+            let frame = String::from_utf8(view.render(cols, rows)).unwrap();
+            assert!(frame.find("Ready").unwrap() < frame.find("Follow Omarchy theme").unwrap());
+            assert_eq!(view.render(cols, rows), view.render(cols, rows));
+            assert_eq!(
+                view.handle(b"f", cols, rows),
+                SettingsAction::Apply(SettingsPatch {
+                    follow_omarchy_theme: Some(true),
+                    ..Default::default()
+                })
+            );
+            let (row, _) = view.theme_follow_control(rect).unwrap();
+            let x = rect.x + LIST_W + 2 + label.len() as u16 + 2;
+            assert_eq!(
+                view.click(cols, rows, x + 2, rect.y + 1 + row as u16),
+                SettingsAction::None
+            );
+            assert_eq!(
+                view.click(cols, rows, x + 10, rect.y + 1 + row as u16),
+                SettingsAction::Apply(SettingsPatch {
+                    follow_omarchy_theme: Some(false),
+                    ..Default::default()
+                })
+            );
+            view.settings.theme_follow_error = Some("palette missing\x1b]2;unsafe\x07".into());
+            let frame = String::from_utf8(view.render(cols, rows)).unwrap();
+            assert!(frame.contains("palette missing"));
+            assert!(!frame.contains("\x1b]2;unsafe"));
+            view.handle(b"\r", cols, rows);
+            assert!(
+                view.theme_picker.is_some(),
+                "Enter still opens the existing browser"
+            );
+            view.handle(b"\x1b", cols, rows);
+            view.nav(true, 20);
+            assert_eq!(view.field(), Field::Status);
+        }
+    }
+
+    #[test]
+    fn live_palette_preserves_pending_settings_and_manual_selection_disables_following() {
+        let mut data = snapshot();
+        data.omarchy_available = true;
+        data.follow_omarchy_theme = true;
+        let mut view = SettingsView::new(data, true, None);
+        select(&mut view, Field::Editor);
+        view.begin_edit();
+        view.editing.as_mut().unwrap().buffer = "vim with unsaved text".into();
+        let before = (view.sel, view.scroll, view.saved, view.focus.clone());
+        let mut actual = uniterm_core::Theme::dark();
+        actual.accent = uniterm_core::Color::Rgb(7, 19, 43);
+        view.refresh_theme(actual);
+        view.refresh_theme(actual);
+        assert_eq!(view.settings.effective_theme, actual);
+        assert_eq!(
+            (view.sel, view.scroll, view.saved, view.focus.clone()),
+            before
+        );
+        assert_eq!(
+            view.editing.as_ref().unwrap().buffer,
+            "vim with unsaved text"
+        );
+        let patch = view.set_choice(Field::Theme, "nord".into());
+        assert_eq!(patch.theme.as_deref(), Some("nord"));
+        assert!(!view.settings.follow_omarchy_theme);
+    }
+
+    #[test]
+    fn tab_label_alignment_choices_apply_by_keyboard_and_pointer() {
+        let mut view = SettingsView::new(snapshot(), true, None);
+        select(&mut view, Field::TabLabelAlignment);
+        assert_eq!(view.value(Field::TabLabelAlignment), "Center");
+        assert!(SECTIONS[0].fields.contains(&Field::TabLabelAlignment));
+        assert_eq!(
+            view.options(Field::TabLabelAlignment),
+            ["Left", "Center", "Right"]
+        );
+        for (index, alignment) in uniterm_core::TabLabelAlignment::ALL.iter().enumerate() {
+            assert_eq!(view.handle(b"\r", 120, 40), SettingsAction::Redraw);
+            assert_eq!(
+                view.handle(alignment.name().as_bytes(), 120, 40),
+                SettingsAction::Redraw
+            );
+            let patch = SettingsPatch {
+                tab_label_alignment: Some(alignment.name().into()),
+                ..Default::default()
+            };
+            assert_eq!(
+                view.handle(b"\r", 120, 40),
+                SettingsAction::Apply(patch.clone())
+            );
+            assert_eq!(view.settings.tab_label_alignment, alignment.name());
+            assert_eq!(view.handle(b"\r", 120, 40), SettingsAction::Redraw);
+            let rect = SettingsView::rect(120, 40);
+            assert_eq!(
+                view.click(
+                    120,
+                    40,
+                    rect.x + LIST_W + 3,
+                    rect.y + 1 + CONTROL_ROW as u16 + index as u16
+                ),
+                SettingsAction::Apply(patch)
+            );
+        }
+    }
+
+    #[test]
+    fn overwatch_status_is_live_only_in_its_settings_detail() {
+        let mut view = SettingsView::new(snapshot(), true, None);
+        let mut state = uniterm_core::overwatch::State::default();
+        assert!(!view.refresh_overwatch(&state));
+        select(&mut view, Field::Overwatch);
+        assert!(String::from_utf8(view.render(120, 40))
+            .unwrap()
+            .contains("Status: OFF"));
+        assert!(!view.refresh_overwatch(&state));
+        state.enabled = true;
+        state.phase = uniterm_core::overwatch::Phase::Attention;
+        state.provider = "codex".into();
+        state.model = Some("chosen-model".into());
+        state.message = "Recovery stopped\x1b]2;injected\x07".into();
+        assert!(view.refresh_overwatch(&state));
+        let rendered = String::from_utf8(view.render(120, 40)).unwrap();
+        assert!(rendered.contains("ON - Needs attention"));
+        assert!(rendered.contains("Provider: codex"));
+        assert!(rendered.contains("Model: chosen-model"));
+        assert!(!rendered.contains("\x1b]2;injected"));
+        assert_eq!(view.handle(b"\r", 120, 40), SettingsAction::Overwatch);
+        let rect = SettingsView::rect(120, 40);
+        assert_eq!(
+            view.click(
+                120,
+                40,
+                rect.x + LIST_W + 3,
+                rect.y + 1 + CONTROL_ROW as u16
+            ),
+            SettingsAction::Overwatch
+        );
+        for (cols, rows) in [(80, 24), (100, 30), (140, 40)] {
+            let rect = SettingsView::rect(cols, rows);
+            for (row, col, count) in crate::overlay::render_segments(&view.render(cols, rows)) {
+                let shadow = col == rect.x + 1 && count == usize::from(rect.w);
+                if row >= rect.y && row < rect.y + rect.h && !shadow {
+                    assert!(col + count as u16 <= rect.x + rect.w);
+                }
+            }
+        }
+        select(&mut view, Field::Theme);
+        state.disable();
+        assert!(!view.refresh_overwatch(&state));
+    }
+
+    #[test]
+    fn project_trust_setting_uses_shared_switch_without_enabling_tools() {
+        for (cols, rows) in [(80, 24), (120, 40)] {
+            let mut view = SettingsView::new(snapshot(), true, None);
+            select(&mut view, Field::AutoTrustProjects);
+            assert!(view.settings.auto_trust_projects);
+            assert_eq!(
+                view.handle(b" ", cols, rows),
+                SettingsAction::Apply(SettingsPatch {
+                    auto_trust_projects: Some(false),
+                    ..Default::default()
+                })
+            );
+            assert!(!view.auto_approve);
+            let rect = SettingsView::rect(cols, rows);
+            assert_eq!(
+                view.click(
+                    cols,
+                    rows,
+                    rect.x + LIST_W + 4,
+                    rect.y + 1 + CONTROL_ROW as u16
+                ),
+                SettingsAction::Apply(SettingsPatch {
+                    auto_trust_projects: Some(true),
+                    ..Default::default()
+                })
+            );
+            assert!(!view.auto_approve);
+            assert!(!view.settings.persist_auto_approve);
+            assert!(String::from_utf8(view.render(cols, rows))
+                .unwrap()
+                .contains("Auto-trust Project"));
+        }
+    }
+
+    #[test]
+    fn approval_persistence_setting_never_enables_approval() {
+        let mut view = SettingsView::new(snapshot(), true, None);
+        select(&mut view, Field::PersistAutoApprove);
+        assert_eq!(
+            view.handle(b" ", 120, 40),
+            SettingsAction::Apply(SettingsPatch {
+                persist_auto_approve: Some(true),
+                ..SettingsPatch::default()
+            })
+        );
+        assert!(!view.auto_approve);
+        assert_eq!(
+            SettingsView::label(Field::PersistAutoApprove),
+            "Keep auto-approve on restart"
+        );
+        assert_eq!(
+            view.handle(b" ", 120, 40),
+            SettingsAction::Apply(SettingsPatch {
+                persist_auto_approve: Some(false),
+                ..SettingsPatch::default()
+            })
+        );
+        assert!(!view.auto_approve);
+    }
+
+    #[test]
+    fn automatic_task_tracking_uses_the_existing_settings_switch() {
+        let mut view = SettingsView::new(snapshot(), true, None);
+        select(&mut view, Field::AutoTrackTasks);
+        assert_eq!(
+            view.handle(b" ", 120, 40),
+            SettingsAction::Apply(SettingsPatch {
+                auto_track_tasks: Some(false),
+                ..Default::default()
+            })
+        );
+        assert_eq!(
+            view.handle(b" ", 120, 40),
+            SettingsAction::Apply(SettingsPatch {
+                auto_track_tasks: Some(true),
+                ..Default::default()
+            })
+        );
+    }
+
+    #[test]
+    fn agent_settings_loading_toggle_noop_and_click_geometry() {
+        let mut view = SettingsView::new(snapshot(), true, None);
+        select(&mut view, Field::AutoApproval);
+        assert_eq!(view.handle(b"\r", 120, 40), SettingsAction::None);
+        view.refresh_agents(Vec::new(), false, None);
+        let rect = SettingsView::rect(120, 40);
+        let x = rect.x + LIST_W + 2;
+        let y = rect.y + 1 + APPROVAL_CONTROL_ROW as u16;
+        assert_eq!(
+            view.click(120, 40, x + 10, y),
+            SettingsAction::AutoApprove(false)
+        );
+        assert_eq!(
+            view.click(120, 40, x + 2, y),
+            SettingsAction::AutoApprove(true)
+        );
+        assert!(!view.auto_approve, "wait for the server acknowledgement");
+        view.auto_approval(true, None);
+        assert_eq!(view.click(120, 40, x + 2, y), SettingsAction::Redraw);
+        assert_eq!(
+            view.click(120, 40, x + 10, y),
+            SettingsAction::AutoApprove(false)
+        );
+        select(&mut view, Field::AgentConnectors);
+        assert_eq!(
+            view.handle(b"\r", 120, 40),
+            SettingsAction::InstallAllConnectors
+        );
+    }
+
+    #[test]
+    fn theme_opens_browser_without_applying_and_boolean_toggles() {
+        let mut view = SettingsView::new(snapshot(), true, None);
+        assert!(matches!(view.handle(b"l", 120, 40), SettingsAction::Redraw));
+        assert!(view.theme_picker.is_some());
+        assert_eq!(view.settings.theme, "uniterm-dark");
+        view.handle(b"\x1b", 120, 40);
+        select(&mut view, Field::Sidebar);
+        assert!(matches!(
+            view.handle(b" ", 120, 40),
+            SettingsAction::Apply(SettingsPatch {
+                sidebar: Some(false),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn theme_list_searches_previews_and_applies_on_enter() {
+        let mut view = SettingsView::new(snapshot(), true, None);
+        // Enter opens the option list at the current theme.
+        assert_eq!(view.handle(b"\r", 120, 40), SettingsAction::Redraw);
+        assert!(view.theme_picker.is_some());
+        // Typing filters; the cursor previews the only match, nothing applied.
+        assert_eq!(view.handle(b"nor", 120, 40), SettingsAction::Redraw);
+        assert!(String::from_utf8_lossy(&view.render(120, 40)).contains("1-1 / 1 matches"));
+        assert_eq!(view.settings.theme, "uniterm-dark");
+        let frame = String::from_utf8_lossy(&view.render(120, 40)).into_owned();
+        assert!(frame.contains("Nord"), "preview should name the theme");
+        // Enter applies the previewed theme and returns focus to the rail.
+        assert!(matches!(
+            view.handle(b"\r", 120, 40),
+            SettingsAction::Apply(SettingsPatch { theme: Some(ref value), .. }) if value == "nord"
+        ));
+        assert_eq!(view.focus, Focus::Rail);
+        // Escape leaves the list without applying.
+        view.handle(b"\r", 120, 40);
+        view.handle(b"\x1b[A", 120, 40);
+        assert_eq!(view.handle(b"\x1b", 120, 40), SettingsAction::Redraw);
+        assert_eq!(view.settings.theme, "nord");
+    }
+
+    #[test]
+    fn batched_theme_navigation_opens_preview_and_preserves_search() {
+        for input in [b"kl".as_slice(), b"k ", b"k\x1b[C", b"k\r", b"k/"] {
+            let mut view = SettingsView::new(snapshot(), true, None);
+            select(&mut view, Field::Status);
+            let mut keys = input.to_vec();
+            keys.extend_from_slice(b"nor");
+            assert_eq!(view.handle(&keys, 80, 24), SettingsAction::Redraw);
+            assert!(view.theme_picker.is_some());
+            assert_eq!(view.settings.theme, "uniterm-dark");
+            assert!(matches!(view.handle(b"\r", 80, 24),
+                SettingsAction::Apply(SettingsPatch { theme: Some(ref value), .. }) if value == "nord"));
+        }
+    }
+
+    #[test]
+    fn theme_wheel_previews_without_typing_or_applying() {
+        let mut data = snapshot();
+        data.themes = uniterm_core::config::ThemePreset::ALL
+            .iter()
+            .map(|p| p.name().into())
+            .collect();
+        let mut view = SettingsView::new(data, true, None);
+        assert_eq!(view.handle(b"/rose pine", 80, 24), SettingsAction::Redraw);
+        let rect = SettingsView::rect(80, 24);
+        assert_eq!(
+            view.wheel(true, 80, 24, rect.x + 3, rect.y + 4),
+            SettingsAction::Redraw
+        );
+        let frame = String::from_utf8(view.render(80, 24)).unwrap();
+        assert!(frame.contains("rose pine"));
+        assert!(!frame.contains("rose pinej"));
+        assert_eq!(view.settings.theme, "uniterm-dark");
+        view.handle(b"\x15zzzzzz", 80, 24);
+        assert_eq!(view.handle(b"\r", 80, 24), SettingsAction::None);
+        assert!(view.theme_picker.is_some());
+        assert_eq!(view.handle(b"\x1b", 80, 24), SettingsAction::Redraw);
+        assert!(view.theme_picker.is_none());
+    }
+
+    #[test]
+    fn rail_lists_names_only_under_section_headings() {
+        let view = SettingsView::new(snapshot(), true, None);
+        let rows = view.rail_rows();
+        assert!(matches!(rows[0], RailRow::Heading("Appearance")));
+        assert!(matches!(rows[1], RailRow::Setting(Field::Theme)));
+        assert_eq!(
+            rows.iter()
+                .filter(|row| matches!(row, RailRow::Setting(_)))
+                .count(),
+            view.fields().count()
+        );
+        let frame = String::from_utf8_lossy(&view.render(120, 60)).into_owned();
+        assert!(frame.contains("APPEARANCE"));
+        assert!(frame.contains("GUARDRAILS"));
+        // The rail row for the theme carries its name, not its value.
+        let rect = SettingsView::rect(120, 60);
+        let marker = format!("\x1b[{};{}H", rect.y + 2, rect.x);
+        let rail_row = frame
+            .split(&marker)
+            .nth(1)
+            .unwrap()
+            .split('│')
+            .nth(1)
+            .unwrap();
+        assert!(rail_row.contains("Theme"));
+        assert!(!rail_row.contains("uniterm-dark"));
+    }
+
+    #[test]
+    fn tab_close_confirmation_emits_its_own_patch() {
+        let mut view = SettingsView::new(snapshot(), true, None);
+        select(&mut view, Field::ConfirmTabClose);
+        assert!(matches!(
+            view.handle(b" ", 120, 40),
+            SettingsAction::Apply(SettingsPatch {
+                confirm_tab_close: Some(false),
+                confirm_close: None,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn freeze_on_select_is_a_behaviour_switch_with_its_own_patch() {
+        let mut view = SettingsView::new(snapshot(), true, None);
+        select(&mut view, Field::FreezeOnSelect);
+        assert_eq!(view.value(Field::FreezeOnSelect), "off");
+        assert!(matches!(
+            view.handle(b" ", 120, 40),
+            SettingsAction::Apply(SettingsPatch {
+                freeze_on_select: Some(true),
+                focus_follows_mouse: None,
+                ..
+            })
+        ));
+        assert_eq!(view.value(Field::FreezeOnSelect), "on");
+        let frame = String::from_utf8_lossy(&view.render(120, 40)).into_owned();
+        assert!(frame.contains("Freeze on select"));
+
+        select(&mut view, Field::CopyOnSelect);
+        assert_eq!(view.value(Field::CopyOnSelect), "on");
+        assert!(matches!(
+            view.handle(b" ", 120, 40),
+            SettingsAction::Apply(SettingsPatch {
+                copy_on_select: Some(false),
+                freeze_on_select: None,
+                ..
+            })
+        ));
+        assert_eq!(view.value(Field::CopyOnSelect), "off");
+    }
+
+    #[test]
+    fn update_keyboard_and_click_share_the_explicit_handoff() {
+        let mut view = SettingsView::new(snapshot(), true, None);
+        select(&mut view, Field::Update);
+        assert_eq!(view.handle(b"\r", 120, 40), SettingsAction::Update);
+        let rect = SettingsView::rect(120, 40);
+        assert_eq!(
+            view.click_pane(rect, rect.x + LIST_W + 3, rect.y + 1 + CONTROL_ROW as u16),
+            SettingsAction::Update
+        );
+        let frame = String::from_utf8(view.render(120, 40)).unwrap();
+        assert!(frame.contains("Check for updates"));
+    }
+
+    #[test]
+    fn desktop_migration_is_an_explicit_action() {
+        let mut view = SettingsView::new(snapshot(), true, None);
+        select(&mut view, Field::DesktopMigration);
+        assert_eq!(view.handle(b"\r", 120, 40), SettingsAction::MigrateDesktop);
+    }
+
+    #[test]
+    fn editor_fields_use_single_line_editing_and_emit_exact_patches() {
+        let mut view = SettingsView::new(snapshot(), true, None);
+        select(&mut view, Field::Editor);
+        assert_eq!(view.handle(b"\r", 120, 40), SettingsAction::Redraw);
+        assert!(matches!(
+            view.handle(b"\x15nvim --clean\r", 120, 40),
+            SettingsAction::Apply(SettingsPatch { editor: Some(ref value), .. })
+                if value == "nvim --clean"
+        ));
+
+        select(&mut view, Field::EditorRules);
+        assert_eq!(view.handle(b"\r", 120, 40), SettingsAction::Redraw);
+        assert!(matches!(
+            view.handle(b"\x15md=glow; rs=nvim\r", 120, 40),
+            SettingsAction::Apply(SettingsPatch { editor_rules: Some(ref value), .. })
+                if value == "md=glow; rs=nvim"
+        ));
+    }
+
+    #[test]
+    fn guardrail_rows_emit_bounded_numeric_and_exact_project_patches() {
+        let mut view = SettingsView::new(snapshot(), true, None);
+        select(&mut view, Field::GuardActiveRuns);
+        assert!(matches!(
+            view.handle(b"l", 120, 40),
+            SettingsAction::Apply(SettingsPatch {
+                guardrail_max_active_runs: Some(9),
+                ..
+            })
+        ));
+
+        select(&mut view, Field::GuardElapsedMinutes);
+        assert_eq!(view.handle(b"\r", 120, 40), SettingsAction::Redraw);
+        assert!(matches!(
+            view.handle(b"\x15180\r", 120, 40),
+            SettingsAction::Apply(SettingsPatch {
+                guardrail_max_elapsed_minutes: Some(180),
+                ..
+            })
+        ));
+
+        select(&mut view, Field::GuardAllowedProjects);
+        assert_eq!(view.handle(b"\r", 120, 40), SettingsAction::Redraw);
+        assert!(matches!(
+            view.handle(b"\x15core; /work/api\r", 120, 40),
+            SettingsAction::Apply(SettingsPatch {
+                guardrail_allowed_projects: Some(ref value),
+                ..
+            }) if value == "core; /work/api"
+        ));
+    }
+
+    #[test]
+    fn guardrail_numeric_editor_rejects_out_of_range_values_locally() {
+        let mut view = SettingsView::new(snapshot(), true, None);
+        select(&mut view, Field::GuardIterations);
+        assert_eq!(view.handle(b"\r", 120, 40), SettingsAction::Redraw);
+        assert_eq!(view.handle(b"\x150\r", 120, 40), SettingsAction::Redraw);
+        assert!(view
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("1 to 100")));
+    }
+
+    #[test]
+    fn steppers_clamp_to_their_range_and_widths_step_by_two() {
+        let mut view = SettingsView::new(snapshot(), true, None);
+        select(&mut view, Field::SidebarWidth);
+        assert!(matches!(
+            view.handle(b"l", 120, 40),
+            SettingsAction::Apply(SettingsPatch {
+                sidebar_width: Some(26),
+                ..
+            })
+        ));
+        view.settings.sidebar_width = 40;
+        assert!(matches!(
+            view.handle(b"l", 120, 40),
+            SettingsAction::Apply(SettingsPatch {
+                sidebar_width: Some(40),
+                ..
+            })
+        ));
+        select(&mut view, Field::Scrollback);
+        view.settings.scrollback_limit = 500;
+        assert!(matches!(
+            view.handle(b"h", 120, 40),
+            SettingsAction::Apply(SettingsPatch {
+                scrollback_limit: Some(100),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn the_sound_rows_live_in_the_notifications_section_and_patch_the_sound_keys() {
+        let mut view = SettingsView::new(snapshot(), true, None);
+        let section = SECTIONS
+            .iter()
+            .find(|section| section.title == "Notifications")
+            .expect("notifications section");
+        assert!(section.fields.contains(&Field::NotificationSound));
+        assert!(section.fields.contains(&Field::NotificationSoundFile));
+
+        select(&mut view, Field::NotificationSound);
+        // Cycling forward from the bell default lands on the chime.
+        assert!(matches!(
+            view.handle(b"l", 120, 40),
+            SettingsAction::Apply(SettingsPatch { notification_sound: Some(ref value), .. })
+                if value == "chime"
+        ));
+
+        select(&mut view, Field::NotificationSoundFile);
+        assert!(matches!(
+            view.handle(b"\r", 120, 40),
+            SettingsAction::Redraw
+        ));
+        for byte in b"/tmp/ding.wav" {
+            view.handle(&[*byte], 120, 40);
+        }
+        assert!(matches!(
+            view.handle(b"\r", 120, 40),
+            SettingsAction::Apply(SettingsPatch { notification_sound_file: Some(ref value), .. })
+                if value == "/tmp/ding.wav"
+        ));
+    }
+
+    #[test]
+    fn clicking_an_option_row_applies_it() {
+        let mut view = SettingsView::new(snapshot(), true, None);
+        select(&mut view, Field::Notifications);
+        let rect = SettingsView::rect(120, 40);
+        // Options start at CONTROL_ROW inside the pane; the fourth is "system".
+        let y = rect.y + 1 + CONTROL_ROW as u16 + 3;
+        let x = rect.x + LIST_W + 4;
+        assert!(matches!(
+            view.click(120, 40, x, y),
+            SettingsAction::Apply(SettingsPatch { notification_delivery: Some(ref value), .. })
+                if value == "system"
+        ));
+    }
+
+    #[test]
+    fn rendered_rows_never_exceed_the_modal_width() {
+        let view = SettingsView::new(snapshot(), true, None);
+        let rect = SettingsView::rect(100, 30);
+        for (row, col, count) in crate::overlay::render_segments(&view.render(100, 30)) {
+            // The drop shadow is one cell right of the box by design.
+            let shadow = col == rect.x + 1 && count == usize::from(rect.w);
+            if row >= rect.y && row < rect.y + rect.h && !shadow {
+                assert!(
+                    col + count as u16 <= rect.x + rect.w,
+                    "row {row} overflows: starts {col}, {count} cells"
+                );
+            }
+        }
+    }
+}

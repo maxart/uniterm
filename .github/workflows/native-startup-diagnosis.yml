@@ -1,0 +1,70 @@
+name: Native startup diagnosis
+
+on:
+  workflow_dispatch:
+    inputs:
+      diagnostics:
+        description: 'Retain daemon/PTY diagnostics (false tests normal production settings)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  worktree:
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      RUSTFLAGS: -D warnings
+      RUST_BACKTRACE: '1'
+      RETAIN_DIAGNOSTICS: ${{ inputs.diagnostics }}
+      TMPDIR: /tmp/ut
+      XDG_RUNTIME_DIR: /tmp/ut-rt
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: 1.96.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Prepare isolated diagnostic paths
+        run: |
+          mkdir -p /tmp/ut /tmp/ut-rt "$RUNNER_TEMP/uniterm-daemon-logs"
+          chmod 700 /tmp/ut /tmp/ut-rt "$RUNNER_TEMP/uniterm-daemon-logs"
+          if [ "$RETAIN_DIAGNOSTICS" = true ]; then
+            echo "UNITERM_DAEMON_LOG_DIR=$RUNNER_TEMP/uniterm-daemon-logs" >> "$GITHUB_ENV"
+            echo "UNITERM_PTY_DIAGNOSTICS=1" >> "$GITHUB_ENV"
+          fi
+          python3 scripts/collect-macos-crashes.py --mark
+      - name: Qualify concurrent native launches and launch latency
+        run: |
+          unset UNITERM_DAEMON_LOG_DIR UNITERM_PTY_DIAGNOSTICS
+          cargo test -p uniterm-server --lib macos_concurrent_process_launches_complete_after_parent_initialization --locked -- --nocapture
+          cargo test -p uniterm-server --lib pty_spawn_latency_measurement --locked -- --ignored --nocapture --test-threads=1
+      - name: Stress prompt acknowledgements with production defaults
+        run: |
+          unset UNITERM_DAEMON_LOG_DIR UNITERM_PTY_DIAGNOSTICS
+          cargo test -p uniterm-server --lib native_command_ --locked -- --nocapture
+          cargo test -p uniterm-cli --test tab_cli --locked -- --nocapture
+        env:
+          UNITERM_PROMPT_REPETITIONS: '1000'
+      - name: Repeat native startup and recovery sequence
+        run: |
+          if [ "$RETAIN_DIAGNOSTICS" != true ]; then
+            unset UNITERM_DAEMON_LOG_DIR UNITERM_PTY_DIAGNOSTICS
+          fi
+          cargo test -p uniterm-cli --test agent_hooks --test session_watch_resources --test tab_cli --test timeline_resume --test worktree_cli --locked --no-run
+          for attempt in $(seq 1 100); do
+            echo "Native startup sequence $attempt/100"
+            cargo test -p uniterm-cli --test agent_hooks --test session_watch_resources --test tab_cli --test timeline_resume --test worktree_cli --locked
+          done
+      - name: Collect bounded evidence
+        if: always()
+        run: python3 scripts/collect-macos-crashes.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-startup-evidence
+          path: ${{ runner.temp }}/uniterm-native-crashes/
+          if-no-files-found: ignore
+          retention-days: 7
