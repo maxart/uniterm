@@ -1,0 +1,8 @@
+Project trust
+/work
+Saved decision: none
+Current session: untrusted
+→ Trust
+  Trust parent folder (/)
+  Do not trust
+↑↓ navigate  enter save  esc cancel

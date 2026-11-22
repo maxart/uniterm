@@ -1,0 +1,1273 @@
+//! Client message and command dispatch.
+//!
+//! One vocabulary: keybindings, CLI controls, and automation all arrive here
+//! and resolve to the same semantic command path.
+
+use super::*;
+
+impl Server {
+    pub(super) fn handle_msg(
+        &mut self,
+        reg: &Registry,
+        token: Token,
+        msg: ClientMessage,
+        remove: &mut bool,
+    ) {
+        if matches!(
+            &msg,
+            ClientMessage::Input(_)
+                | ClientMessage::Resize { .. }
+                | ClientMessage::Detach
+                | ClientMessage::FocusLost
+                | ClientMessage::OverlayVisible { on: true }
+        ) {
+            self.cancel_sidebar_label(
+                reg,
+                token,
+                !matches!(
+                    &msg,
+                    ClientMessage::OverlayVisible { .. } | ClientMessage::Detach
+                ),
+            );
+        }
+        if matches!(
+            &msg,
+            ClientMessage::Input(_)
+                | ClientMessage::Resize { .. }
+                | ClientMessage::Detach
+                | ClientMessage::FocusLost
+                | ClientMessage::OverlayVisible { on: true }
+                | ClientMessage::SettingsApply(_)
+                | ClientMessage::Command(_)
+        ) {
+            self.finish_sidebar_drag(token);
+        }
+        let is_direct = self
+            .clients
+            .get(&token)
+            .is_some_and(|client| client.direct_only);
+        if is_direct
+            && !matches!(
+                &msg,
+                ClientMessage::PaneAttach { .. }
+                    | ClientMessage::Input(_)
+                    | ClientMessage::Resize { .. }
+                    | ClientMessage::Refresh
+                    | ClientMessage::FocusGained
+                    | ClientMessage::Detach
+            )
+        {
+            return;
+        }
+        if matches!(
+            &msg,
+            ClientMessage::SettingsApply(_) | ClientMessage::Command(_)
+        ) {
+            self.finish_any_sidebar_drag();
+        }
+        if self.defer_client_launch(reg, token, &msg) {
+            return;
+        }
+        let previous_observatory_tab = self.observatory_tab;
+        let previous_overwatch_focus = self.overwatch_focused;
+        let previous_files_focus = self.files.focused;
+        match msg {
+            ClientMessage::Overwatch { operation } => {
+                if let uniterm_core::overwatch::Operation::Models { request } = operation {
+                    self.request_overwatch_models(token, request);
+                    return;
+                }
+                let chat = matches!(operation, uniterm_core::overwatch::Operation::Chat);
+                if matches!(operation, uniterm_core::overwatch::Operation::Open) {
+                    self.send_overwatch(reg, token, true, None);
+                } else if let Err(error) = self.overwatch_operation(reg, operation) {
+                    self.send_overwatch(reg, token, true, Some(error));
+                } else if !chat {
+                    self.send_overwatch(reg, token, true, None);
+                }
+            }
+            ClientMessage::Attach { cols, rows, .. } => {
+                let was_visible = self.file_manager_visible();
+                let had_clients = self
+                    .clients
+                    .values()
+                    .any(|client| client.attached && !client.dead);
+                if let Some(c) = self.clients.get_mut(&token) {
+                    c.attached = true;
+                    c.direct = None;
+                    c.cols = cols.max(1);
+                    c.rows = rows.max(1);
+                }
+                let geometry_changed = self.recompute_client_geometry();
+                self.reconcile_file_manager_runtime(was_visible, had_clients);
+                if geometry_changed {
+                    self.relayout();
+                    self.full_repaint_all(reg);
+                } else {
+                    self.full_repaint_client(reg, token);
+                }
+                self.reply_settings(reg, token, false, None);
+            }
+            ClientMessage::Resize { cols, rows } => {
+                if is_direct {
+                    self.full_repaint_direct_client(reg, token);
+                    return;
+                }
+                let was_visible = self.file_manager_visible();
+                let had_clients = self
+                    .clients
+                    .values()
+                    .any(|client| client.attached && !client.dead);
+                if let Some(c) = self.clients.get_mut(&token) {
+                    c.cols = cols.max(1);
+                    c.rows = rows.max(1);
+                }
+                let geometry_changed = self.recompute_client_geometry();
+                self.reconcile_file_manager_runtime(was_visible, had_clients);
+                if geometry_changed {
+                    self.relayout();
+                    self.full_repaint_all(reg);
+                } else {
+                    self.full_repaint_client(reg, token);
+                }
+            }
+            ClientMessage::Input(bytes) => {
+                let mut keyboard = self
+                    .clients
+                    .get(&token)
+                    .map(|client| client.keyboard_input)
+                    .unwrap_or_default();
+                if let Some(client) = self.clients.get_mut(&token) {
+                    for byte in &bytes {
+                        client.keyboard_input.observe_byte(*byte);
+                    }
+                }
+                if is_direct {
+                    if let Some((pane, can_control)) = self.clients.get(&token).and_then(|client| {
+                        client
+                            .direct
+                            .as_ref()
+                            .map(|direct| (direct.pane, direct.role.can_control()))
+                    }) {
+                        if can_control {
+                            if let Some(pane) = self.panes.get_mut(&pane) {
+                                let input = if pane.term.keyboard_disambiguation() {
+                                    std::borrow::Cow::Borrowed(bytes.as_slice())
+                                } else {
+                                    keyboard.legacy_keys(&bytes, None)
+                                };
+                                Self::queue_pane_input(reg, pane, &input);
+                            }
+                        }
+                    }
+                    return;
+                }
+                let active = self.input_pane();
+                let legacy_consumer = self.context_menu.is_some()
+                    || self.today.is_some()
+                    || (self.files.focused && self.file_manager_visible())
+                    || self.overview.is_some()
+                    || self.panes.get(&active).is_some_and(|pane| {
+                        pane.copy.is_some() || !pane.term.keyboard_disambiguation()
+                    });
+                let legacy = if legacy_consumer {
+                    keyboard.legacy_keys(&bytes, None)
+                } else {
+                    std::borrow::Cow::Borrowed(bytes.as_slice())
+                };
+                // Context menus, the file tree, overview, and copy-mode own
+                // keyboard input while active; none of it reaches the PTY.
+                if self.context_menu.is_some() {
+                    self.handle_context_input(reg, token, &legacy);
+                } else if self.overwatch_focused && self.overwatch_rect().is_some() {
+                    if let Some(active) = self.overwatch_chat_pane() {
+                        if !self.handle_copy_input(reg, &legacy) {
+                            if let Some(pane) = self.panes.get_mut(&active) {
+                                let input = if pane.term.keyboard_disambiguation() {
+                                    bytes.as_slice()
+                                } else {
+                                    &legacy
+                                };
+                                Self::queue_pane_input(reg, pane, input);
+                            }
+                        }
+                    }
+                } else if self.today.is_some() {
+                    self.today_input(reg, &legacy);
+                } else if self.files.focused && self.file_manager_visible() {
+                    let action = self.files.handle(&legacy);
+                    self.handle_file_action(reg, action);
+                } else if self.overview.is_some() {
+                    self.handle_overview_input(reg, &legacy);
+                } else if !self.handle_copy_input(reg, &legacy) {
+                    let active = self.input_pane();
+                    if let Some(p) = self.panes.get_mut(&active) {
+                        let input = if p.term.keyboard_disambiguation() {
+                            bytes.as_slice()
+                        } else {
+                            &legacy
+                        };
+                        Self::queue_pane_input(reg, p, input);
+                    }
+                }
+            }
+            ClientMessage::PaneAttach { pane, role } => {
+                self.attach_direct_client(reg, token, pane, role)
+            }
+            ClientMessage::Command(Command::Overwatch) => {
+                self.send_overwatch(reg, token, true, None)
+            }
+            ClientMessage::Command(cmd) => self.handle_command(reg, cmd),
+            ClientMessage::ListInfo => {
+                let info = ServerMessage::Info {
+                    windows: self.windows.len() as u32,
+                    panes: self.panes.len() as u32,
+                };
+                if let Some(c) = self.clients.get_mut(&token) {
+                    c.queue(&encode_frame(&info));
+                    c.flush();
+                    let _ = set_interest(reg, c, token);
+                }
+            }
+            ClientMessage::KillServer => {
+                // Only an explicit stop command (`ut workspace stop`, `ut kill`,
+                // the menu's kill action) sends this, so the request itself is
+                // the confirmation; the decision is still recorded first.
+                self.guard_semantic(uniterm_core::GuardedCommand::WorkspaceStop, true, None);
+                self.kill_all_panes();
+                self.shutdown(reg);
+            }
+            ClientMessage::Refresh => self.full_repaint_client(reg, token),
+            ClientMessage::FocusGained => self.full_repaint_client(reg, token),
+            ClientMessage::FocusLost => {}
+            ClientMessage::OverlayVisible { on } => {
+                if let Some(c) = self.clients.get_mut(&token) {
+                    c.overlay = on;
+                }
+                if on && self.context_menu.take().is_some() {
+                    self.full_repaint_all(reg);
+                } else if !on {
+                    // Pane output continued updating the server-side grids
+                    // while the client-owned overlay covered the canvas. Send
+                    // one current frame now instead of streaming hidden frames
+                    // through the overlay and forcing it to repaint repeatedly.
+                    self.full_repaint_client(reg, token);
+                }
+            }
+            ClientMessage::RenameSession { name } => {
+                self.rename_session(reg, &name);
+                self.reply_workspace(reg, token);
+            }
+            ClientMessage::WorkspaceState => self.reply_workspace(reg, token),
+            ClientMessage::ProjectCreate { name, root } => {
+                let error = self.create_project(reg, &name, &root).err();
+                if let Some(client) = self.clients.get_mut(&token) {
+                    client.queue(&encode_frame(&ServerMessage::ProjectCreated { error }));
+                    client.flush();
+                    let _ = set_interest(reg, client, token);
+                }
+                self.reply_workspace(reg, token);
+            }
+            ClientMessage::ProjectDirectory { project, root } => {
+                self.start_project_directory(
+                    reg,
+                    project_directory::DirectoryRequester::Client(token),
+                    project,
+                    root,
+                );
+            }
+            ClientMessage::ProjectRename { project, name } => {
+                self.rename_project(reg, project, &name);
+                self.reply_workspace(reg, token);
+            }
+            ClientMessage::ProjectMove { project, direction } => {
+                self.move_project(reg, project, direction);
+                self.reply_workspace(reg, token);
+            }
+            ClientMessage::ProjectSwitch { project } => {
+                self.switch_project(reg, project);
+                self.reply_workspace(reg, token);
+            }
+            ClientMessage::ProjectRemove { project, confirmed } => {
+                if !self.guard_semantic(
+                    uniterm_core::GuardedCommand::ProjectRemove,
+                    confirmed,
+                    Some(project),
+                ) {
+                    self.show_guardrail_toast(reg, "Project removal needs confirmation");
+                    return;
+                }
+                if self
+                    .projects
+                    .iter()
+                    .find(|item| item.id == project)
+                    .and_then(Self::worktree_registration)
+                    .is_some()
+                {
+                    self.start_worktree_operation(
+                        reg,
+                        WorktreeRequester::ClientWorkspace(token),
+                        uniterm_proto::WorktreeOperation::Remove {
+                            project,
+                            force: false,
+                        },
+                    );
+                } else {
+                    self.remove_project(reg, project);
+                    self.reply_workspace(reg, token);
+                }
+            }
+            ClientMessage::WorkspaceImport { workspace, mode } => {
+                let result = self.import_workspace(reg, &workspace, mode);
+                let message = match result {
+                    Ok((projects_added, tabs_added, projects_merged)) => {
+                        ServerMessage::WorkspaceImported {
+                            projects_added,
+                            tabs_added,
+                            projects_merged,
+                            error: None,
+                        }
+                    }
+                    Err(error) => ServerMessage::WorkspaceImported {
+                        projects_added: 0,
+                        tabs_added: 0,
+                        projects_merged: 0,
+                        error: Some(error),
+                    },
+                };
+                if let Some(client) = self.clients.get_mut(&token) {
+                    client.queue(&encode_frame(&message));
+                    client.flush();
+                    let _ = set_interest(reg, client, token);
+                }
+            }
+            ClientMessage::Settings => {
+                self.reply_settings(reg, token, true, None);
+                self.send_overwatch(reg, token, false, None);
+            }
+            ClientMessage::SettingsApply(patch) => self.apply_settings(reg, token, patch),
+            ClientMessage::AgentExplain { pane } => {
+                let entries = self.detection_snapshot(pane);
+                if let Some(client) = self.clients.get_mut(&token) {
+                    client.queue(&encode_frame(&ServerMessage::AgentExplanation { entries }));
+                    client.flush();
+                    let _ = set_interest(reg, client, token);
+                }
+            }
+            ClientMessage::SwitcherSubscribe { on } => {
+                if let Some(client) = self.clients.get_mut(&token) {
+                    client.switcher_subscribed = on && self.config.switcher_enabled;
+                    client.last_switcher.clear();
+                }
+                self.broadcast_switcher(reg);
+            }
+            ClientMessage::PaneList => {
+                let panes = self.pane_snapshot();
+                if let Some(client) = self.clients.get_mut(&token) {
+                    client.queue(&encode_frame(&ServerMessage::Panes {
+                        workspace: self.name.clone(),
+                        panes,
+                    }));
+                    client.flush();
+                    let _ = set_interest(reg, client, token);
+                }
+            }
+            ClientMessage::RunList {
+                project,
+                active_only,
+            } => {
+                let runs = self.run_snapshot(project, active_only);
+                if let Some(client) = self.clients.get_mut(&token) {
+                    client.queue(&encode_frame(&ServerMessage::Runs {
+                        workspace: self.name.clone(),
+                        runs,
+                    }));
+                    client.flush();
+                    let _ = set_interest(reg, client, token);
+                }
+            }
+            ClientMessage::ArtifactList {
+                project,
+                run,
+                include_superseded,
+            } => {
+                let artifacts = self.artifact_snapshot(project, run, include_superseded);
+                if let Some(client) = self.clients.get_mut(&token) {
+                    client.queue(&encode_frame(&ServerMessage::Artifacts {
+                        workspace: self.name.clone(),
+                        artifacts,
+                    }));
+                    client.flush();
+                    let _ = set_interest(reg, client, token);
+                }
+            }
+            ClientMessage::RunFork { fork } => self.start_run_fork(
+                reg,
+                WorktreeRequester::RunForkClient {
+                    token,
+                    parent: fork.parent,
+                },
+                fork,
+            ),
+            ClientMessage::PaneFocus { pane } => {
+                let found = self.focus_pane_target(reg, pane);
+                if let Some(client) = self.clients.get_mut(&token) {
+                    client.queue(&encode_frame(&ServerMessage::PaneFocused { pane, found }));
+                    client.flush();
+                    let _ = set_interest(reg, client, token);
+                }
+            }
+            ClientMessage::HierarchyFocus { project, tab, pane } => {
+                let focused = self.focus_hierarchy_target(reg, project, tab, pane);
+                if let Some(client) = self.clients.get_mut(&token) {
+                    client.queue(&encode_frame(&ServerMessage::HierarchyFocused {
+                        project,
+                        tab,
+                        pane,
+                        focused,
+                    }));
+                    client.flush();
+                    let _ = set_interest(reg, client, token);
+                }
+            }
+            ClientMessage::TabMove { direction } => {
+                let moved = self.move_active_tab(direction);
+                if moved {
+                    self.relayout();
+                    self.full_repaint_all(reg);
+                }
+                if let Some(client) = self.clients.get_mut(&token) {
+                    client.queue(&encode_frame(&ServerMessage::TabMoved { moved }));
+                    client.flush();
+                    let _ = set_interest(reg, client, token);
+                }
+            }
+            ClientMessage::PaneRead { pane, lines } => {
+                let (found, text, truncated) = self
+                    .bounded_pane_output(pane, lines)
+                    .map_or((false, String::new(), false), |(text, truncated)| {
+                        (true, text, truncated)
+                    });
+                if let Some(client) = self.clients.get_mut(&token) {
+                    client.queue(&encode_frame(&ServerMessage::PaneOutput {
+                        pane,
+                        found,
+                        text,
+                        truncated,
+                    }));
+                    client.flush();
+                    let _ = set_interest(reg, client, token);
+                }
+            }
+            ClientMessage::PaneSend { pane, bytes } => {
+                let (found, accepted) = if let Some(pane) = self.panes.get_mut(&pane) {
+                    (true, Self::queue_pane_input(reg, pane, &bytes))
+                } else {
+                    (false, false)
+                };
+                if let Some(client) = self.clients.get_mut(&token) {
+                    client.queue(&encode_frame(&ServerMessage::PaneSent {
+                        pane,
+                        found,
+                        accepted,
+                    }));
+                    client.flush();
+                    let _ = set_interest(reg, client, token);
+                }
+            }
+            ClientMessage::PaneWaitOutput {
+                pane,
+                needle,
+                timeout_ms,
+            } => {
+                if let Some(client) = self.clients.get_mut(&token) {
+                    client.pending_wait = Some(PendingControlWait::Output {
+                        pane,
+                        needle: needle.chars().take(4_096).collect(),
+                        deadline: std::time::Instant::now()
+                            + std::time::Duration::from_millis(timeout_ms.clamp(1, 3_600_000)),
+                    });
+                }
+                self.service_pending_waits(reg);
+            }
+            ClientMessage::AgentWait {
+                pane,
+                status,
+                timeout_ms,
+            } => {
+                if let Some(client) = self.clients.get_mut(&token) {
+                    client.pending_wait = Some(PendingControlWait::Agent {
+                        pane,
+                        status,
+                        deadline: std::time::Instant::now()
+                            + std::time::Duration::from_millis(timeout_ms.clamp(1, 3_600_000)),
+                    });
+                }
+                self.service_pending_waits(reg);
+            }
+            ClientMessage::WaitingList => self.reply_waiting(reg, token),
+            ClientMessage::WaitingAct { id, action, text } => {
+                let (found, accepted) = self.waiting_action(reg, id, action, &text);
+                let items = self.waiting_snapshot();
+                if let Some(client) = self.clients.get_mut(&token) {
+                    client.queue(&encode_frame(&ServerMessage::WaitingActed {
+                        id,
+                        found,
+                        accepted,
+                        items,
+                    }));
+                    client.flush();
+                    let _ = set_interest(reg, client, token);
+                }
+            }
+            // The CLI verb is the human's explicit consent, so arming over
+            // the client protocol needs no further confirmation flag.
+            ClientMessage::DelegationArm { pane } => {
+                let (entries, error) = match self.arm_delegation(reg, pane) {
+                    Ok(()) => (self.delegation_entries(Some(pane)), None),
+                    Err((_, message)) => (Vec::new(), Some(message)),
+                };
+                if let Some(client) = self.clients.get_mut(&token) {
+                    client.queue(&encode_frame(&ServerMessage::Delegation { entries, error }));
+                    client.flush();
+                    let _ = set_interest(reg, client, token);
+                }
+            }
+            ClientMessage::DelegationDisarm { pane } => {
+                self.disarm_delegation(pane, "disarmed");
+                let entries = self.delegation_entries(None);
+                if let Some(client) = self.clients.get_mut(&token) {
+                    client.queue(&encode_frame(&ServerMessage::Delegation {
+                        entries,
+                        error: None,
+                    }));
+                    client.flush();
+                    let _ = set_interest(reg, client, token);
+                }
+            }
+            ClientMessage::DelegationStatus { pane } => {
+                let entries = self.delegation_entries(pane);
+                if let Some(client) = self.clients.get_mut(&token) {
+                    client.queue(&encode_frame(&ServerMessage::Delegation {
+                        entries,
+                        error: None,
+                    }));
+                    client.flush();
+                    let _ = set_interest(reg, client, token);
+                }
+            }
+            ClientMessage::DelegationExplain { pane } => {
+                let (found, verdict) = self.explain_delegation(pane);
+                if let Some(client) = self.clients.get_mut(&token) {
+                    client.queue(&encode_frame(&ServerMessage::DelegationExplained {
+                        pane,
+                        found,
+                        verdict,
+                    }));
+                    client.flush();
+                    let _ = set_interest(reg, client, token);
+                }
+            }
+            ClientMessage::InstructionList => self.reply_instructions(reg, token),
+            ClientMessage::InstructionAdd { pane, author, text } => {
+                let result = self.instruction_command(
+                    reg,
+                    instruction::InstructionCommand::Add { pane, author, text },
+                );
+                self.reply_instruction_change(reg, token, result);
+            }
+            ClientMessage::InstructionReplace { id, author, text } => {
+                let result = self.instruction_command(
+                    reg,
+                    instruction::InstructionCommand::Replace { id, author, text },
+                );
+                self.reply_instruction_change(reg, token, result);
+            }
+            ClientMessage::InstructionCancel { id } => {
+                let result =
+                    self.instruction_command(reg, instruction::InstructionCommand::Cancel { id });
+                self.reply_instruction_change(reg, token, result);
+            }
+            ClientMessage::InstructionSendNow { id } => {
+                let result =
+                    self.instruction_command(reg, instruction::InstructionCommand::SendNow { id });
+                self.reply_instruction_change(reg, token, result);
+            }
+            ClientMessage::PaneMetadata {
+                pane,
+                key,
+                value,
+                ttl_seconds,
+            } => self.set_pane_metadata(reg, pane, &key, &value, ttl_seconds),
+            ClientMessage::ProjectMetadata {
+                project,
+                key,
+                value,
+            } => {
+                self.set_project_metadata(reg, project, &key, &value);
+                self.reply_workspace(reg, token);
+            }
+            ClientMessage::Worktree { operation } => {
+                self.start_worktree_operation(reg, WorktreeRequester::Client(token), operation)
+            }
+            ClientMessage::RenameWindow { name } => {
+                let trimmed = name.trim();
+                let wi = self.active_window;
+                self.windows[wi].name = (!trimmed.is_empty()).then(|| trimmed.to_string());
+                self.append_event(crate::eventlog::LogEvent::WindowRenamed {
+                    window: wi as u64,
+                    name: trimmed.to_string(),
+                });
+                self.full_repaint_all(reg);
+                self.persist();
+            }
+            ClientMessage::NewTask {
+                prompt,
+                relay,
+                agent,
+                role_providers,
+                workflow,
+                project,
+                options,
+            } => {
+                let result = self.start_task(
+                    reg,
+                    uniterm_proto::TaskLaunchRequest {
+                        prompt,
+                        relay,
+                        agent,
+                        role_providers,
+                        workflow,
+                        project,
+                        options,
+                    },
+                );
+                if let Some(client) = self.clients.get_mut(&token) {
+                    client.queue(&encode_frame(&ServerMessage::TaskStarted {
+                        error: result.err(),
+                    }));
+                    client.flush();
+                    let _ = set_interest(reg, client, token);
+                }
+            }
+            ClientMessage::WorkflowSubmit {
+                token,
+                failed,
+                verdict,
+                summary,
+            } => self.on_workflow_submit(
+                reg,
+                token,
+                if failed {
+                    uniterm_proto::SubmissionStatus::Failed
+                } else {
+                    uniterm_proto::SubmissionStatus::Done
+                },
+                verdict,
+                summary,
+                Vec::new(),
+                false,
+            ),
+            ClientMessage::OrchestrationSubmit {
+                kind,
+                token,
+                status,
+                verdict,
+                summary,
+                artifacts,
+            } => match kind {
+                uniterm_proto::OrchestrationKind::Workflow => {
+                    self.on_workflow_submit(reg, token, status, verdict, summary, artifacts, false)
+                }
+                uniterm_proto::OrchestrationKind::Relay => {
+                    self.on_relay_submit(reg, token, status, summary, artifacts, false)
+                }
+            },
+            ClientMessage::Observatory => {
+                let fleet = self.fleet_snapshot();
+                let dev_servers = self.dev_server_snapshot();
+                let waiting = self.waiting_snapshot();
+                if let Some(c) = self.clients.get_mut(&token) {
+                    c.queue(&encode_frame(&ServerMessage::Fleet { entries: fleet }));
+                    c.queue(&encode_frame(&ServerMessage::DevServers {
+                        entries: dev_servers,
+                    }));
+                    c.queue(&encode_frame(&ServerMessage::Waiting { items: waiting }));
+                    c.flush();
+                    let _ = set_interest(reg, c, token);
+                }
+            }
+            ClientMessage::Suggest => {
+                let projects = self.project_names();
+                let agents = uniterm_core::agent::PROVIDERS
+                    .iter()
+                    .filter(|provider| self.resolved_agent(Some(provider.id)).is_some())
+                    .map(|provider| provider.id.to_string())
+                    .collect::<Vec<_>>();
+                if let Some(c) = self.clients.get_mut(&token) {
+                    c.queue(&encode_frame(&ServerMessage::Suggestions {
+                        projects,
+                        launch: agents
+                            .iter()
+                            .map(|id| {
+                                let spec = crate::providers::launch_spec(id);
+                                uniterm_proto::TaskProviderOptions {
+                                    id: id.clone(),
+                                    model: spec.model_flag.is_some(),
+                                    profile: spec.profile_flag.is_some(),
+                                }
+                            })
+                            .collect(),
+                        agents,
+                        active_project: self
+                            .projects
+                            .iter()
+                            .find(|p| p.id == self.active_project)
+                            .map(|p| p.name.clone())
+                            .unwrap_or_default(),
+                        project_roots: self
+                            .projects
+                            .iter()
+                            .map(|p| (p.name.clone(), p.root.clone()))
+                            .collect(),
+                    }));
+                    c.flush();
+                    let _ = set_interest(reg, c, token);
+                }
+            }
+            ClientMessage::TaskSetStatus { id, status } => {
+                if self.tasks.get(id).is_some_and(|t| {
+                    t.status != status
+                        || t.context
+                            .observed
+                            .as_ref()
+                            .is_some_and(|o| !o.manual_status)
+                }) {
+                    self.append_event(crate::eventlog::LogEvent::TaskStatusChanged { id, status });
+                    self.tasks.set_status(id, status);
+                }
+                self.reply_tasks(reg, token);
+            }
+            ClientMessage::TaskRetitle { id, title } => {
+                let title = title.trim().to_string();
+                if !title.is_empty() && self.tasks.get(id).is_some_and(|t| t.title != title) {
+                    self.append_event(crate::eventlog::LogEvent::TaskRetitled {
+                        id,
+                        title: title.clone(),
+                    });
+                    self.tasks.set_title(id, &title);
+                }
+                self.reply_tasks(reg, token);
+            }
+            ClientMessage::TaskDelete { id } => {
+                if self.tasks.get(id).is_some() {
+                    self.append_event(crate::eventlog::LogEvent::TaskDeleted { id });
+                    self.tasks.remove(id);
+                }
+                self.reply_tasks(reg, token);
+            }
+            ClientMessage::Tasks => {
+                if let Some(client) = self.clients.get_mut(&token) {
+                    client.tasks_subscribed = true;
+                }
+                self.reply_tasks(reg, token);
+            }
+            ClientMessage::TasksClose => {
+                if let Some(client) = self.clients.get_mut(&token) {
+                    client.tasks_subscribed = false;
+                    client.last_tasks.clear();
+                    client.task_detail = None;
+                }
+            }
+            ClientMessage::TaskPage { query } => {
+                if let Some(client) = self.clients.get_mut(&token) {
+                    client.task_query = query;
+                    client.tasks_subscribed = true;
+                }
+                self.reply_tasks(reg, token);
+            }
+            ClientMessage::TaskDetail { id, offset } => {
+                self.reply_task_detail(reg, token, id, offset, false)
+            }
+            ClientMessage::TaskCompose { id } => self.reply_task_detail(reg, token, id, 0, true),
+            ClientMessage::TaskNotes { id, notes } => {
+                if let Some(task) = self.tasks.get(id) {
+                    let context = task.context.clone();
+                    self.set_task_details(id, &notes, context);
+                }
+                self.reply_tasks(reg, token);
+            }
+            // The Manage Agents surfaces touch the filesystem (PATH probes,
+            // settings reads/edits), so the work runs on the agent runtime;
+            // the merged snapshot comes back through [`Server::on_agent_reply`].
+            // The reply always re-reads reality rather than trusting intent.
+            ClientMessage::AutoApprove { enabled, .. } => {
+                self.set_auto_approve(reg, enabled);
+                if let Some(client) = self.clients.get_mut(&token) {
+                    client.queue(&encode_frame(&ServerMessage::AutoApproval {
+                        enabled: self.auto_approval.enabled(),
+                        error: None,
+                    }));
+                    client.flush();
+                    let _ = set_interest(reg, client, token);
+                }
+            }
+            ClientMessage::Agents => {
+                self.agents
+                    .send(uniterm_proto::CoreToAgent::AgentsDiskQuery {
+                        client: token.0 as u64,
+                        search_path: self.agent_search_path.clone(),
+                    });
+            }
+            ClientMessage::WorkspaceList => {
+                self.agents
+                    .send(uniterm_proto::CoreToAgent::WorkspaceCatalogQuery {
+                        client: token.0 as u64,
+                    });
+            }
+            ClientMessage::AgentConfigFiles => {
+                self.agents
+                    .send(uniterm_proto::CoreToAgent::AgentConfigQuery {
+                        client: token.0 as u64,
+                    });
+            }
+            ClientMessage::AgentConfigEdit { path } => {
+                self.agents
+                    .send(uniterm_proto::CoreToAgent::AgentConfigEdit {
+                        client: token.0 as u64,
+                        project: self.active_project,
+                        command: self.config.editor_for_path(&path).to_string(),
+                        path,
+                    });
+            }
+            ClientMessage::ConnectorsInstallAll => {
+                self.agents
+                    .send(uniterm_proto::CoreToAgent::ConnectorsInstallAll {
+                        client: token.0 as u64,
+                        search_path: self.agent_search_path.clone(),
+                    });
+            }
+            ClientMessage::ConnectorToggle { agent } => {
+                self.agents
+                    .send(uniterm_proto::CoreToAgent::ConnectorToggle {
+                        agent,
+                        client: token.0 as u64,
+                        search_path: self.agent_search_path.clone(),
+                    });
+            }
+            ClientMessage::AgentLaunch { agent, target } => {
+                let pane = self.launch_agent(reg, &agent, target);
+                if let Some(client) = self.clients.get_mut(&token) {
+                    client.queue(&encode_frame(&ServerMessage::AgentLaunchResult {
+                        agent,
+                        pane,
+                    }));
+                    client.flush();
+                    let _ = set_interest(reg, client, token);
+                }
+            }
+            ClientMessage::AgentFocus { pane } => {
+                self.focus_pane_target(reg, pane);
+            }
+            ClientMessage::AgentStop { pane } => {
+                self.stop_agent_pane(reg, pane);
+            }
+            ClientMessage::AgentsStopAll { scope, confirmed } => {
+                let project = match scope {
+                    uniterm_proto::StopScope::Project(project) => Some(project),
+                    _ => None,
+                };
+                if !self.guard_semantic(
+                    uniterm_core::GuardedCommand::AgentsStopAll,
+                    confirmed,
+                    project,
+                ) {
+                    self.show_guardrail_toast(reg, "Stopping every agent needs confirmation");
+                    return;
+                }
+                self.stop_all_agents(reg, scope);
+                self.agents
+                    .send(uniterm_proto::CoreToAgent::AgentsDiskQuery {
+                        client: token.0 as u64,
+                        search_path: self.agent_search_path.clone(),
+                    });
+            }
+            ClientMessage::RemoteEnvironment { search_path } => {
+                let unattached = self
+                    .clients
+                    .get(&token)
+                    .is_some_and(|client| !client.attached);
+                if unattached {
+                    if let Some(search_path) = normalize_remote_search_path(search_path) {
+                        self.agent_search_path =
+                            merge_search_paths(search_path, &self.agent_search_path);
+                    }
+                }
+            }
+            ClientMessage::SaveTask { title } => {
+                if !title.trim().is_empty() {
+                    let id = self.create_task(title.trim(), uniterm_core::TaskStatus::Todo);
+                    self.set_task_details(
+                        id,
+                        "",
+                        uniterm_core::tasks::TaskContext {
+                            project: Some(self.active_project),
+                            ..Default::default()
+                        },
+                    );
+                }
+                if let Some(client) = self.clients.get_mut(&token) {
+                    client.queue(&encode_frame(&ServerMessage::TaskStarted { error: None }));
+                    client.flush();
+                    let _ = set_interest(reg, client, token);
+                }
+            }
+            ClientMessage::Mouse { x, y, kind } => self.on_mouse(reg, token, x, y, kind),
+            ClientMessage::Detach => {
+                if let Some(c) = self.clients.get_mut(&token) {
+                    c.queue(&encode_frame(&ServerMessage::Detached));
+                    c.flush();
+                }
+                *remove = true;
+            }
+        }
+        if self.observatory_tab != previous_observatory_tab
+            || (self.overwatch_focused && !previous_overwatch_focus)
+            || (self.files.focused && !previous_files_focus)
+        {
+            if let Some((_, rect, _)) = self
+                .observatory_tab_slots()
+                .into_iter()
+                .find(|(tab, _, _)| *tab == self.observatory_tab)
+            {
+                self.hover_sidebar_label(reg, token, rect.x, rect.y);
+            }
+        }
+    }
+
+    pub(super) fn handle_command(&mut self, reg: &Registry, cmd: Command) {
+        if matches!(cmd, Command::KillPane)
+            && self.overwatch_focused
+            && self.overwatch_rect().is_some()
+        {
+            if let Err(error) =
+                self.overwatch_operation(reg, uniterm_core::overwatch::Operation::Disable)
+            {
+                self.show_guardrail_toast(reg, &error);
+            }
+            return;
+        }
+        let dismissed_context_menu = self.context_menu.take().is_some();
+        // Explicit Pane and Tab navigation is a request to type into the
+        // terminal again. Keyboard routing checks Files focus before any
+        // Pane, so these commands must release it; the sidebar stays open.
+        let files_released = matches!(
+            cmd,
+            Command::Split(_)
+                | Command::Focus(_)
+                | Command::LastPane
+                | Command::ZoomToggle
+                | Command::KillPane
+                | Command::NewWindow
+                | Command::NewStackTab
+                | Command::UnstackTab
+                | Command::PaneLayout(_)
+                | Command::NextWindow
+                | Command::PrevWindow
+                | Command::SelectWindow(_)
+                | Command::KillWindow
+                | Command::Overview
+        ) && self.focus_terminal_input();
+        if !matches!(
+            cmd,
+            Command::Switcher
+                | Command::Today
+                | Command::RunGraph
+                | Command::Observatory
+                | Command::SidebarToggle
+                | Command::FileSort(_)
+                | Command::FileSidebarToggle
+                | Command::MoveTab(_)
+                | Command::Overwatch
+                | Command::CopyMode
+        ) {
+            self.close_today();
+        }
+        match cmd {
+            Command::Overwatch => {
+                self.open_overwatch(reg);
+                return;
+            }
+            Command::Servers | Command::LocalMachine => {
+                let clients: Vec<_> = self.clients.keys().copied().collect();
+                for client in clients {
+                    self.request_machine_navigation(reg, client, cmd == Command::LocalMachine);
+                }
+                return;
+            }
+            Command::RunGraph => {
+                self.open_run_graph(reg);
+                return;
+            }
+            Command::Switcher => {
+                self.open_switcher(reg);
+                return;
+            }
+            Command::Today => {
+                self.open_today(reg);
+                return;
+            }
+            Command::NewStackTab => {
+                let anchor = self.windows[self.active_window].active;
+                if let Some(pane) = self.create_tab(reg, self.active_project, false) {
+                    self.set_tab_parent(reg, pane, Some(anchor));
+                }
+            }
+            Command::UnstackTab => {
+                self.set_tab_parent(reg, self.windows[self.active_window].active, None);
+            }
+            Command::PaneLayout(mode) => {
+                self.set_pane_layout(reg, self.windows[self.active_window].active, mode);
+            }
+            Command::Split(axis) => {
+                let pane = self.windows[self.active_window].active;
+                self.split_pane(reg, pane, axis, false);
+            }
+            Command::Focus(fd) => {
+                let dir = match fd {
+                    FocusDir::Left => Direction::Left,
+                    FocusDir::Right => Direction::Right,
+                    FocusDir::Up => Direction::Up,
+                    FocusDir::Down => Direction::Down,
+                };
+                let wi = self.active_window;
+                // Zoom hides the siblings from current_layout. Resolve the
+                // direction in the underlying split tree before unzooming.
+                let unzoomed;
+                let layout = if self.windows[wi].zoomed.is_some() {
+                    let mut scroll = self.windows[wi].layout_scroll;
+                    unzoomed = self.windows[wi].layout.compute_mode(
+                        self.chrome_area().0,
+                        self.windows[wi].layout_mode,
+                        self.windows[wi].active,
+                        &mut scroll,
+                    );
+                    &unzoomed
+                } else {
+                    &self.current_layout
+                };
+                let arranged =
+                    self.windows[wi].layout_mode == uniterm_core::layout::PaneLayout::Scrolling;
+                let next = if arranged {
+                    let ids = self.windows[wi].layout.pane_ids();
+                    let current = ids
+                        .iter()
+                        .position(|id| *id == self.windows[wi].active)
+                        .unwrap_or(0);
+                    let index = match dir {
+                        Direction::Left | Direction::Up => current.checked_sub(1),
+                        Direction::Right | Direction::Down => {
+                            (current + 1 < ids.len()).then_some(current + 1)
+                        }
+                    };
+                    index.map(|index| ids[index])
+                } else {
+                    neighbor(&layout.panes, self.windows[wi].active, dir)
+                };
+                if let Some(n) = next {
+                    self.last_active_pane = Some(self.windows[wi].active);
+                    self.windows[wi].active = n;
+                    self.windows[wi].zoomed = None;
+                    // Full repaint so the brighten/dim of the newly-focused vs
+                    // previously-focused pane is applied (not just a cursor move).
+                    self.relayout();
+                    self.full_repaint_all(reg);
+                }
+            }
+            Command::Overview => {
+                self.overview = match self.overview {
+                    Some(_) => None,
+                    None => Some(
+                        self.project_window_indices(self.active_project)
+                            .iter()
+                            .position(|window| *window == self.active_window)
+                            .unwrap_or(0),
+                    ),
+                };
+                self.full_repaint_all(reg);
+            }
+            Command::ZoomToggle => {
+                let wi = self.active_window;
+                let a = self.windows[wi].active;
+                self.windows[wi].zoomed = if self.windows[wi].zoomed.is_some() {
+                    None
+                } else {
+                    Some(a)
+                };
+                self.relayout();
+                self.full_repaint_all(reg);
+            }
+            Command::KillPane => {
+                let a = self.windows[self.active_window].active;
+                self.close_pane(reg, a);
+            }
+            Command::NewWindow => {
+                self.create_tab(reg, self.active_project, false);
+            }
+            Command::NextWindow => {
+                let tabs = self.project_window_indices(self.active_project);
+                if tabs.len() > 1 {
+                    let current = tabs
+                        .iter()
+                        .position(|index| *index == self.active_window)
+                        .unwrap_or(0);
+                    self.activate_window(tabs[(current + 1) % tabs.len()]);
+                    self.relayout();
+                    self.full_repaint_all(reg);
+                }
+            }
+            Command::PrevWindow => {
+                let tabs = self.project_window_indices(self.active_project);
+                if tabs.len() > 1 {
+                    let current = tabs
+                        .iter()
+                        .position(|index| *index == self.active_window)
+                        .unwrap_or(0);
+                    self.activate_window(tabs[(current + tabs.len() - 1) % tabs.len()]);
+                    self.relayout();
+                    self.full_repaint_all(reg);
+                }
+            }
+            Command::MoveTab(direction) => {
+                if self.move_active_tab(direction) {
+                    self.relayout();
+                    self.full_repaint_all(reg);
+                }
+            }
+            Command::LastPane => {
+                let wi = self.active_window;
+                if let Some(previous) = self
+                    .last_active_pane
+                    .filter(|pane| self.windows[wi].layout.contains_pane(*pane))
+                {
+                    let current = self.windows[wi].active;
+                    self.windows[wi].active = previous;
+                    self.last_active_pane = Some(current);
+                    self.windows[wi].zoomed = None;
+                    self.relayout();
+                    self.full_repaint_all(reg);
+                }
+            }
+            Command::SelectWindow(n) => {
+                let tabs = self.project_window_indices(self.active_project);
+                let idx = n as usize;
+                if let Some(&window) = tabs.get(idx).filter(|&&i| i != self.active_window) {
+                    self.activate_window(window);
+                    self.relayout();
+                    self.full_repaint_all(reg);
+                }
+            }
+            Command::KillWindow => {
+                self.close_tab(reg, self.active_window);
+                if !self.running {
+                    return;
+                }
+            }
+            Command::CopyMode => self.enter_copy_mode(reg),
+            Command::ResizePane(fd) => {
+                if self.windows[self.active_window].layout_mode
+                    != uniterm_core::layout::PaneLayout::Split
+                {
+                    return;
+                }
+                // Map a direction to (split orientation, ratio delta). A step of
+                // 0.05 (5% of the split) feels right for repeated taps.
+                let (orient, delta) = match fd {
+                    FocusDir::Left => (SplitDir::Horizontal, -0.05),
+                    FocusDir::Right => (SplitDir::Horizontal, 0.05),
+                    FocusDir::Up => (SplitDir::Vertical, -0.05),
+                    FocusDir::Down => (SplitDir::Vertical, 0.05),
+                };
+                let wi = self.active_window;
+                let active = self.windows[wi].active;
+                if self.windows[wi].layout.resize_pane(active, orient, delta) {
+                    self.relayout();
+                    self.full_repaint_all(reg);
+                }
+            }
+            Command::SidebarToggle => {
+                self.config.sidebar = !self.config.sidebar;
+                self.relayout();
+                self.full_repaint_all(reg);
+                self.agents.send(uniterm_proto::CoreToAgent::ConfigSave {
+                    client: 0,
+                    text: self.config.to_text(),
+                });
+            }
+            Command::FileSort(sort) => {
+                if self.files.set_sort(sort) {
+                    self.persist_workspace_definition();
+                    let capacity = self.file_sidebar_rows(self.sidebar_area()).capacity();
+                    self.files.sync_viewport(capacity);
+                    self.repaint_chrome_all(reg);
+                }
+            }
+            Command::FileSidebarToggle => {
+                self.config.file_sidebar =
+                    !self.config.file_sidebar || self.observatory_tab != ObservatoryTab::Files;
+                if self.config.file_sidebar {
+                    self.observatory_tab = ObservatoryTab::Files;
+                    self.sync_file_manager(true);
+                } else {
+                    self.files.focused = false;
+                    self.stop_file_watches();
+                }
+                self.relayout();
+                self.full_repaint_all(reg);
+                self.agents.send(uniterm_proto::CoreToAgent::ConfigSave {
+                    client: 0,
+                    text: self.config.to_text(),
+                });
+            }
+            Command::Observatory => {
+                self.config.file_sidebar = !self.config.file_sidebar;
+                if self.config.file_sidebar && self.observatory_tab == ObservatoryTab::Files {
+                    self.sync_file_manager(false);
+                } else if !self.config.file_sidebar {
+                    self.files.focused = false;
+                    self.stop_file_watches();
+                }
+                self.relayout();
+                self.full_repaint_all(reg);
+                self.agents.send(uniterm_proto::CoreToAgent::ConfigSave {
+                    client: 0,
+                    text: self.config.to_text(),
+                });
+            }
+        }
+        if dismissed_context_menu {
+            self.full_repaint_all(reg);
+        } else if files_released {
+            // The Files selection is drawn differently without focus; a
+            // command that changed nothing else still updates that in place.
+            self.repaint_chrome_all(reg);
+        }
+        // Any command may have changed the structure; keep the snapshot current.
+        self.persist();
+    }
+}
+
+impl Server {
+    pub(super) fn request_machine_navigation(
+        &mut self,
+        reg: &Registry,
+        client: Token,
+        local: bool,
+    ) {
+        if let Some(state) = self.clients.get_mut(&client) {
+            state.queue(&encode_frame(&ServerMessage::MachineNavigation { local }));
+            state.flush();
+            let _ = set_interest(reg, state, client);
+        }
+    }
+}
