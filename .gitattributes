@@ -1,0 +1,2 @@
+# Preserve captured PTY bytes, including carriage returns and terminal escapes.
+/crates/uniterm-server/tests/fixtures/approval/*.ansi binary
