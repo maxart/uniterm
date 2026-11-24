@@ -1,0 +1,12 @@
+[33m╭─[0m[33m [0m[1;33mapproval[0m[33m [0m[33m──────────────────────────────────────────────────────────────────[0m[33m─╮[0m
+[33m│[0m  [33mShell is requesting approval to run command:[0m                                [33m│[0m
+[33m│[0m                                                                              [33m│[0m
+[33m│[0m  [93mpwd[0m                                                                         [33m│[0m
+[33m│[0m                                                                              [33m│[0m
+[33m│[0m [36m→ [1] Approve once[0m                                                           [33m│[0m
+[33m│[0m [38;5;244m  [2] Approve for this session[0m                                               [33m│[0m
+[33m│[0m [38;5;244m  [3] Reject[0m                                                                 [33m│[0m
+[33m│[0m [38;5;244m  [4] Reject, tell the model what to do instead[0m                              [33m│[0m
+[33m│[0m                                                                              [33m│[0m
+[33m│[0m [2m  ▲/▼ select  1/2/3/4 choose  ↵ confirm[0m                                      [33m│[0m
+[33m╰──────────────────────────────────────────────────────────────────────────────╯[0m

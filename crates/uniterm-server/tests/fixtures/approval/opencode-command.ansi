@@ -1,0 +1,5 @@
+△ Permission required
+  $ Shell
+  echo hello
+[30;43m Allow once [90;40m Allow always  Reject [0m
+⇆ select  enter confirm

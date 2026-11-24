@@ -1,0 +1,5 @@
+Approval required
+  echo hello
+› Allow once
+  Reject once
+Esc to cancel
