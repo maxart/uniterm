@@ -1,0 +1,76 @@
+{
+  "products": {
+    "uniterm": {
+      "commit": "c66bdc76f880f0d08dd7331affa480435af8f6c1",
+      "source_clean": true,
+      "binary_sha256": "74fb93a6d5e4bb3a657b702994132e980bbbf6345da3019b8c934476128d8acf",
+      "binary_bytes": 11156960
+    },
+    "herdr": {
+      "commit": "2ecf19a92fc3a7fff75b6ce3655ef04f4625ec01",
+      "source_clean": true,
+      "binary_sha256": "aa21a105f905ea8b12367c47beb70b4d2b39185aa7fbac36cda8e737e8f8bdfe",
+      "binary_bytes": 31071152
+    },
+    "tmux": {
+      "commit": "7f2a35ad3321f9ba57a1062ca73b1f3ff26aca53",
+      "source_clean": true,
+      "binary_sha256": "5057f6c01ed52865093b0ef38502ce1fdb939a2c116e5aa749bed1bf910ead97",
+      "binary_bytes": 2329608,
+      "source_verification": "Official 3.8 release tarball; all 208 C/header files match tag 3.8 exactly."
+    }
+  },
+  "harness_commit": "76026d6233515d1e568ba60f5837bbb529e626cb",
+  "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+  "zig": "0.16.0",
+  "herdr_ghostty_optimization": "ReleaseFast, SIMD enabled (release defaults)",
+  "tmux_dependencies": {
+    "libevent": "2.1.12-stable, static",
+    "ncurses": "6.5, static tinfow"
+  },
+  "kernel": "7.2.15-ogc1.1.fc45.x86_64",
+  "cpu": "AMD Ryzen AI MAX+ 395, 32 logical CPUs",
+  "platform_profile": "performance",
+  "cpu_governor": "performance",
+  "environment": "Active desktop; no CPU pinning or power-policy changes; real PTY observer, no outer emulator paint measurement",
+  "historical_baseline": "Uniterm 1.0.4 / Herdr 0.8.2 / tmux 3.7c on a different six-logical-CPU host; not a controlled longitudinal regression comparison",
+  "campaign_validation": {
+    "trials": 3,
+    "metrics_per_contender_per_trial": 36,
+    "measurement_count": 324,
+    "failures": 0,
+    "warnings": 0,
+    "all_campaign_product_processes_exited": true,
+    "publication": "held for startup and relative-performance concerns"
+  },
+  "startup_followup_baseline": {
+    "version": "uniterm 1.0.4",
+    "source_commit": "a961519c5ed965c91a9f354554bfdcaba154810a",
+    "source_clean": true,
+    "binary_sha256": "798a26568ba8a8bef013b512eb631ab69d4807e32dd0fea206a4b040eb0f6d60",
+    "compiler": "rustc 1.96.0 (ac68faa20 2026-05-25)"
+  },
+  "startup_followup_validation": {
+    "trials_per_version": 20,
+    "order": "alternating",
+    "same_host": true,
+    "same_compiler": true,
+    "same_harness_startup_probe": true,
+    "summary": {
+      "uniterm-old": {
+        "count": 20,
+        "median_ms": 3.7734110000000003,
+        "min_ms": 3.450386,
+        "max_ms": 4.323104000000001
+      },
+      "uniterm-current": {
+        "count": 20,
+        "median_ms": 53.2553485,
+        "min_ms": 47.955981,
+        "max_ms": 60.222485999999996
+      },
+      "current_over_old": 14.113317764749187
+    }
+  },
+  "harness_sha256": "359d3082639dd73da254248a6d2a0a5c1d03b34b459f42918ad81f3bebddd49e"
+}

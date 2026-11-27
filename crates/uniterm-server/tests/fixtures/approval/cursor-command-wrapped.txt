@@ -1,0 +1,12 @@
+────────────────────────────────────────────────────────────────────────────────
+ $  bash ./verify.sh measurement-for-a-real-command-that-wraps-beyond-the-visib
+    le-width-of-the-terminal-0123456789 in .
+
+ Run this command?
+ Not in allowlist: bash ./verify.sh measurement-for-a-real-command-that-wraps-b
+ eyond-the-visible-width-of-the-terminal-0123456789
+  → Run (once) (y)
+    Run Everything (shift+tab)
+    Skip & tell the agent what to do instead (esc or n)
+
+                                                ctrl+r to review changed files
