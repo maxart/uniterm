@@ -1,0 +1,57 @@
+{
+  "products": {
+    "uniterm": {
+      "commit": "4274e426e22e9d9ec8e85fe8fe7a3ea55e8f6605",
+      "version": "uniterm 1.2.20-dev+g4274e426e",
+      "source_clean": true,
+      "binary_sha256": "fdec88a8d30c7a5f4f0393d0ec063f396c7b31bc4fe81b922605edace6eb2f5a",
+      "binary_bytes": 11372840,
+      "build": "cargo build --release --locked --offline -p uniterm-cli --bin ut; unchanged workspace release profile"
+    },
+    "herdr": {
+      "commit": "2ecf19a92fc3a7fff75b6ce3655ef04f4625ec01",
+      "source_clean": true,
+      "binary_sha256": "aa21a105f905ea8b12367c47beb70b4d2b39185aa7fbac36cda8e737e8f8bdfe",
+      "binary_bytes": 31071152
+    },
+    "tmux": {
+      "commit": "7f2a35ad3321f9ba57a1062ca73b1f3ff26aca53",
+      "source_clean": true,
+      "binary_sha256": "5057f6c01ed52865093b0ef38502ce1fdb939a2c116e5aa749bed1bf910ead97",
+      "binary_bytes": 2329608,
+      "source_verification": "Official 3.8 release tarball; all 208 C/header files match tag 3.8 exactly."
+    }
+  },
+  "harness_commit": "76026d6233515d1e568ba60f5837bbb529e626cb",
+  "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+  "zig": "0.16.0",
+  "herdr_ghostty_optimization": "ReleaseFast, SIMD enabled (release defaults)",
+  "tmux_dependencies": {
+    "libevent": "2.1.12-stable, static",
+    "ncurses": "6.5, static tinfow"
+  },
+  "kernel": "7.2.15-ogc1.1.fc45.x86_64",
+  "cpu": "AMD Ryzen AI MAX+ 395, 32 logical CPUs",
+  "platform_profile": "performance",
+  "cpu_governor": "performance",
+  "environment": "Active desktop; no CPU pinning or power-policy changes; real PTY observer, no outer emulator paint measurement",
+  "harness_sha256": "359d3082639dd73da254248a6d2a0a5c1d03b34b459f42918ad81f3bebddd49e",
+  "herdr_latest_stable_verified": "2026-11-12; rechecked official GitHub latest-release API before final campaign: v0.9.5, published 2026-10-14T16:07:28Z",
+  "uniterm_validation": {
+    "debug_passed": 1207,
+    "release_passed": 1207,
+    "ignored_each": 11,
+    "workspace_build": "passed",
+    "clippy_warnings_denied": "passed",
+    "fmt": "passed",
+    "connector_js": "passed",
+    "render_parser_budgets": "passed",
+    "real_config_unchanged": true,
+    "opencode_real_binary_checks": 22,
+    "macos_arm64_pty_compile": "passed",
+    "private_home_and_xdg": true,
+    "parser_median_ms": 21.839,
+    "source_reviews": "Astra and Opus: no blocker or feature loss in integrated source"
+  },
+  "same_host_baseline": "Previous three-seed campaign: Uniterm1.2.20 c66bdc76, unchanged Herdr/tmux/harness binaries; same host/compiler/profile, different time on an active desktop."
+}

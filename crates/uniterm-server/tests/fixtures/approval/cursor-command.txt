@@ -1,0 +1,8 @@
+────────────────────────────────────────────────────────────────────────────────
+ $  bash ./verify.sh in .
+
+ Run this command?
+ Not in allowlist: bash ./verify.sh
+  → Run (once) (y)
+    Run Everything (shift+tab)
+    Skip & tell the agent what to do instead (esc or n)

@@ -1,0 +1,12 @@
+  ┃  ›  Run verify.sh with a long argument
+  ┃  │ bash ./verify.sh·
+  ┃  ┆ measurement-for-a-real-command-that-wraps-beyond-the-visible-width-of
+  ┃  ┆ -the-terminal-0123456789
+  ┃  e edit pattern
+  ┃  1 (○) Always allow: bash ./verify.sh measurement-for-a-real-command-t…
+  ┃  3 (●) Yes, proceed
+  ┃  4 (○) No, reject (type to add feedback)
+  ┃  5 (○) Never allow: bash ./verify.sh
+  ┃    (○) Yes, and don't ask again for anything (always-approve mode)
+
+  1/5:select  │  Tab:next option  │  e:edit pattern  │  Ctrl+c:cancel

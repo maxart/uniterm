@@ -1,0 +1,291 @@
+{
+  "geometry": [
+    160,
+    50
+  ],
+  "order": "Alternates each paired trial",
+  "samples": [
+    {
+      "contender": "uniterm-old",
+      "position": 0,
+      "shutdown_ms": 28.831746,
+      "startup_ms": 4.323104000000001,
+      "trial": 0
+    },
+    {
+      "contender": "uniterm-current",
+      "position": 1,
+      "shutdown_ms": 29.483736999999998,
+      "startup_ms": 53.412435,
+      "trial": 0
+    },
+    {
+      "contender": "uniterm-current",
+      "position": 0,
+      "shutdown_ms": 33.274045,
+      "startup_ms": 52.641489,
+      "trial": 1
+    },
+    {
+      "contender": "uniterm-old",
+      "position": 1,
+      "shutdown_ms": 28.796590000000002,
+      "startup_ms": 3.778786,
+      "trial": 1
+    },
+    {
+      "contender": "uniterm-old",
+      "position": 0,
+      "shutdown_ms": 28.217627,
+      "startup_ms": 3.894114,
+      "trial": 2
+    },
+    {
+      "contender": "uniterm-current",
+      "position": 1,
+      "shutdown_ms": 30.482774,
+      "startup_ms": 53.641538000000004,
+      "trial": 2
+    },
+    {
+      "contender": "uniterm-current",
+      "position": 0,
+      "shutdown_ms": 29.627309,
+      "startup_ms": 50.226147999999995,
+      "trial": 3
+    },
+    {
+      "contender": "uniterm-old",
+      "position": 1,
+      "shutdown_ms": 31.594674000000005,
+      "startup_ms": 3.493788,
+      "trial": 3
+    },
+    {
+      "contender": "uniterm-old",
+      "position": 0,
+      "shutdown_ms": 30.889692,
+      "startup_ms": 3.700598,
+      "trial": 4
+    },
+    {
+      "contender": "uniterm-current",
+      "position": 1,
+      "shutdown_ms": 31.667591,
+      "startup_ms": 58.660525,
+      "trial": 4
+    },
+    {
+      "contender": "uniterm-current",
+      "position": 0,
+      "shutdown_ms": 31.371221999999996,
+      "startup_ms": 56.2484,
+      "trial": 5
+    },
+    {
+      "contender": "uniterm-old",
+      "position": 1,
+      "shutdown_ms": 31.450823000000003,
+      "startup_ms": 3.7269479999999997,
+      "trial": 5
+    },
+    {
+      "contender": "uniterm-old",
+      "position": 0,
+      "shutdown_ms": 31.851729000000002,
+      "startup_ms": 4.150367999999999,
+      "trial": 6
+    },
+    {
+      "contender": "uniterm-current",
+      "position": 1,
+      "shutdown_ms": 31.8362,
+      "startup_ms": 56.548477,
+      "trial": 6
+    },
+    {
+      "contender": "uniterm-current",
+      "position": 0,
+      "shutdown_ms": 32.946667,
+      "startup_ms": 52.694309000000004,
+      "trial": 7
+    },
+    {
+      "contender": "uniterm-old",
+      "position": 1,
+      "shutdown_ms": 31.099318,
+      "startup_ms": 3.825434,
+      "trial": 7
+    },
+    {
+      "contender": "uniterm-old",
+      "position": 0,
+      "shutdown_ms": 30.928796000000002,
+      "startup_ms": 3.480273,
+      "trial": 8
+    },
+    {
+      "contender": "uniterm-current",
+      "position": 1,
+      "shutdown_ms": 36.537318,
+      "startup_ms": 60.222485999999996,
+      "trial": 8
+    },
+    {
+      "contender": "uniterm-current",
+      "position": 0,
+      "shutdown_ms": 30.18933,
+      "startup_ms": 53.578188,
+      "trial": 9
+    },
+    {
+      "contender": "uniterm-old",
+      "position": 1,
+      "shutdown_ms": 29.763646,
+      "startup_ms": 3.8404220000000002,
+      "trial": 9
+    },
+    {
+      "contender": "uniterm-old",
+      "position": 0,
+      "shutdown_ms": 28.131152999999998,
+      "startup_ms": 3.620026,
+      "trial": 10
+    },
+    {
+      "contender": "uniterm-current",
+      "position": 1,
+      "shutdown_ms": 33.336563999999996,
+      "startup_ms": 51.079840000000004,
+      "trial": 10
+    },
+    {
+      "contender": "uniterm-current",
+      "position": 0,
+      "shutdown_ms": 32.385026999999994,
+      "startup_ms": 47.955981,
+      "trial": 11
+    },
+    {
+      "contender": "uniterm-old",
+      "position": 1,
+      "shutdown_ms": 28.049349,
+      "startup_ms": 3.9119970000000004,
+      "trial": 11
+    },
+    {
+      "contender": "uniterm-old",
+      "position": 0,
+      "shutdown_ms": 34.276057,
+      "startup_ms": 3.79135,
+      "trial": 12
+    },
+    {
+      "contender": "uniterm-current",
+      "position": 1,
+      "shutdown_ms": 29.001988,
+      "startup_ms": 52.303591000000004,
+      "trial": 12
+    },
+    {
+      "contender": "uniterm-current",
+      "position": 0,
+      "shutdown_ms": 29.996847,
+      "startup_ms": 48.925963,
+      "trial": 13
+    },
+    {
+      "contender": "uniterm-old",
+      "position": 1,
+      "shutdown_ms": 28.303387999999998,
+      "startup_ms": 3.819403,
+      "trial": 13
+    },
+    {
+      "contender": "uniterm-old",
+      "position": 0,
+      "shutdown_ms": 27.771925,
+      "startup_ms": 3.9169670000000005,
+      "trial": 14
+    },
+    {
+      "contender": "uniterm-current",
+      "position": 1,
+      "shutdown_ms": 29.061941,
+      "startup_ms": 52.167142999999996,
+      "trial": 14
+    },
+    {
+      "contender": "uniterm-current",
+      "position": 0,
+      "shutdown_ms": 29.397074,
+      "startup_ms": 53.098262,
+      "trial": 15
+    },
+    {
+      "contender": "uniterm-old",
+      "position": 1,
+      "shutdown_ms": 29.96704,
+      "startup_ms": 3.56374,
+      "trial": 15
+    },
+    {
+      "contender": "uniterm-old",
+      "position": 0,
+      "shutdown_ms": 31.649638,
+      "startup_ms": 3.697402,
+      "trial": 16
+    },
+    {
+      "contender": "uniterm-current",
+      "position": 1,
+      "shutdown_ms": 32.825258000000005,
+      "startup_ms": 54.380353,
+      "trial": 16
+    },
+    {
+      "contender": "uniterm-current",
+      "position": 0,
+      "shutdown_ms": 31.467693999999998,
+      "startup_ms": 53.934311,
+      "trial": 17
+    },
+    {
+      "contender": "uniterm-old",
+      "position": 1,
+      "shutdown_ms": 29.760761,
+      "startup_ms": 3.6704009999999996,
+      "trial": 17
+    },
+    {
+      "contender": "uniterm-old",
+      "position": 0,
+      "shutdown_ms": 29.277909,
+      "startup_ms": 3.450386,
+      "trial": 18
+    },
+    {
+      "contender": "uniterm-current",
+      "position": 1,
+      "shutdown_ms": 28.782974,
+      "startup_ms": 52.542421999999995,
+      "trial": 18
+    },
+    {
+      "contender": "uniterm-current",
+      "position": 0,
+      "shutdown_ms": 28.746045000000002,
+      "startup_ms": 53.800689,
+      "trial": 19
+    },
+    {
+      "contender": "uniterm-old",
+      "position": 1,
+      "shutdown_ms": 29.608613,
+      "startup_ms": 3.7680360000000004,
+      "trial": 19
+    }
+  ],
+  "scenario": "Fresh workspace startup using the unchanged ut-compare AppAdapter::start readiness probe",
+  "trials_per_version": 20
+}
